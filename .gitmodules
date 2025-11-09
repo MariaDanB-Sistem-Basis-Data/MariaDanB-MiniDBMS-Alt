@@ -4,3 +4,6 @@
 [submodule "Storage-Manager"]
 	path = Storage-Manager
 	url = https://github.com/MariaDanB-Sistem-Basis-Data/Storage-Manager.git
+[submodule "Concurrency-Control-Manager"]
+	path = Concurrency-Control-Manager
+	url = https://github.com/MariaDanB-Sistem-Basis-Data/Concurrency-Control-Manager.git
