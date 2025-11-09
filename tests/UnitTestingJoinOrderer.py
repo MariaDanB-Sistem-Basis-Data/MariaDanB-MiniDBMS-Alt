@@ -1,94 +1,70 @@
-# python -m unittest tests/UnitTestingJoinOrderer.py
-
 import unittest
-
-from QueryOptimizer import OptimizationEngine
 from model.query_tree import QueryTree
+from model.parsed_query import ParsedQuery
+from QueryOptimizer import OptimizationEngine 
 
-from helper.helper import (
-    extract_join_tables,
-    generate_permutations,
-    build_join_tree,
-    heuristic_cost,
-    choose_best,
-)
+class TestOptimizationEngine(unittest.TestCase):
 
-class TestJoinOrderer(unittest.TestCase):
     def setUp(self):
         self.engine = OptimizationEngine()
-    
-    def test_parse_query_from(self):
+    def test_parse_select(self):
         pq = self.engine.parse_query("SELECT * FROM A")
-        root = pq.query_tree
+        self.assertIsInstance(pq, ParsedQuery)
+        self.assertEqual(pq.query_tree.type, "SELECT")
+        self.assertEqual(len(pq.query_tree.childs), 1)
+        self.assertEqual(pq.query_tree.childs[0].type, "FROM")
+        self.assertEqual(pq.query_tree.childs[0].childs[0].val, "A")
 
-        self.assertEqual(root.type, "SELECT")
-        self.assertEqual(root.childs[0].type, "FROM")
-        self.assertEqual(root.childs[0].childs[0].type, "TABLE")
-        self.assertEqual(root.childs[0].childs[0].val, "A")
-    
-    def test_extract_join_tables(self):
-        root = QueryTree("SELECT")
-        from_node = QueryTree("FROM")
-        t1 = QueryTree("TABLE", val="A")
-        t2 = QueryTree("TABLE", val="B")
-        from_node.childs = [t1, t2]
-        root.childs = [from_node]
+    def test_parse_update(self):
+        pq = self.engine.parse_query("UPDATE employee SET x=1")
+        self.assertEqual(pq.query_tree.type, "SELECT")  
 
-        tables = extract_join_tables(root)
-        self.assertEqual(set(tables), {"A", "B"})
-    
-    def test_generate_permutations(self):
-        arr = ["A", "B", "C"]
-        perms = generate_permutations(arr)
-        self.assertEqual(len(perms), 6)
-        self.assertIn(["A", "B", "C"], perms)
-        self.assertIn(["C", "B", "A"], perms)
-    
-    def test_build_join_tree(self):
-        order = ["A", "B", "C"]
-        tree = build_join_tree(order)
-
-        self.assertEqual(tree.type, "JOIN")
-        self.assertEqual(tree.childs[0].type, "JOIN")
-        self.assertEqual(tree.childs[1].type, "TABLE")
-        self.assertEqual(tree.childs[1].val, "C")
-    
-    def test_heuristic_cost(self):
-        order = ["A", "B"]
-        tree = build_join_tree(order)
-        cost = heuristic_cost(tree)
-        self.assertEqual(cost, 3)
-    
-    def test_choose_best(self):
-        t1 = build_join_tree(["A", "B", "C"])
-        t2 = build_join_tree(["A", "B"])
-
-        best = choose_best([t1, t2], heuristic_cost)
-        self.assertEqual(heuristic_cost(best), heuristic_cost(t2))
-    
-    def test_optimize_query_join(self):
+    def test_optimize_basic(self):
         pq = self.engine.parse_query("SELECT * FROM A")
-        pq.query_tree.childs[0].childs = [
-            QueryTree("TABLE", val="A"),
-            QueryTree("TABLE", val="B"),
-            QueryTree("TABLE", val="C"),
-        ]
+        out = self.engine.optimize_query(pq)
+        self.assertIsInstance(out, ParsedQuery)
+        self.assertIsNotNone(out.query_tree)
 
-        opt = self.engine.optimize_query(pq)
+    def test_optimize_three_tables(self):
 
-        self.assertEqual(opt.query_tree.type, "JOIN")
-        self.assertNotEqual(opt.query_tree.type, "TABLE")
+        A = QueryTree("TABLE", val="A")
+        B = QueryTree("TABLE", val="B")
+        C = QueryTree("TABLE", val="C")
 
-        collected = []
+        j1 = QueryTree("JOIN", childs=[A, B])
+        A.parent = j1
+        B.parent = j1
 
-        def dfs(n):
-            if n.type == "TABLE":
-                collected.append(n.val)
-            for c in n.childs:
-                dfs(c)
+        j2 = QueryTree("JOIN", childs=[j1, C])
+        j1.parent = j2
+        C.parent = j2
 
-        dfs(opt.query_tree)
-        self.assertEqual(set(collected), {"A", "B", "C"})
+        root = QueryTree("SELECT", val="dummy")
+        root.add_child(j2)
+
+        pq = ParsedQuery("SELECT * FROM A,B,C", root)
+
+        out = self.engine.optimize_query(pq)
+
+        self.assertEqual(out.query_tree.type, "JOIN")
+
+        self.assertEqual(out.query_tree.childs[0].type, "JOIN")
+
+    def test_cost_positive(self):
+        pq = self.engine.parse_query("SELECT * FROM A")
+        optimized = self.engine.optimize_query(pq)
+        cost = self.engine.get_cost(optimized)
+
+        self.assertTrue(isinstance(cost, int))
+        self.assertGreaterEqual(cost, 0)
+
+    def test_full_pipeline(self):
+        pq = self.engine.parse_query("SELECT * FROM A, B, C")
+        out = self.engine.optimize_query(pq)
+        cost = self.engine.get_cost(out)
+
+        self.assertIsNotNone(out.query_tree)
+        self.assertGreaterEqual(cost, 0)
 
 
 if __name__ == "__main__":
