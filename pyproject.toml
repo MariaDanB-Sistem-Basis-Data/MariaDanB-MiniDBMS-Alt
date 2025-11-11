@@ -1,0 +1,11 @@
+[project]
+name = "failure-recovery-manager"
+version = "0.1.0"
+description = "Failure Recovery Manager stack."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v ruff >/dev/null 2>&1; then
+  echo "Ruff is required for linting. Install via 'pip install ruff'." >&2
+  exit 1
+fi
+
+echo "Running Ruff lint..."
+ruff check .
+
+echo "Checking formatting with Ruff..."
+ruff format --check .
