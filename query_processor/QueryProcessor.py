@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from QueryExecutor import QueryExecutor
+from query_processor.QueryExecutor import QueryExecutor
 from query_processor.model.ExecutionResult import ExecutionResult
 from query_processor.model.Rows import Rows
 from query_processor.helper.query_utils import *
@@ -29,13 +29,13 @@ class QueryProcessor:
                 result_data = self.query_executor.execute_update(query)
 
             elif query_type == QueryType.BEGIN_TRANSACTION:
-                result_data =  self.query_executor.execute_begin_transaction(query_type)
+                result_data =  self.query_executor.execute_begin_transaction(query)
             
             elif query_type == QueryType.COMMIT:
-                result_data = self.query_executor.execute_commit(query_type)
+                result_data = self.query_executor.execute_commit(query)
 
             elif query_type == QueryType.ABORT:
-                result_data = self.query_executor.execute_abort(query_type)
+                result_data = self.query_executor.execute_abort(query)
 
             elif query_type in DATA_QUERIES or query_type in TRANSACTION_QUERIES:
                 return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=f"Cek helper/query_utils.py, harusnya ini query type dari bonus yg belum consider dikerjain (query_type: {query_type})", data=0, query=query)
