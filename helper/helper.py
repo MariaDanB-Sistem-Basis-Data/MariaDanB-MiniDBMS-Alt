@@ -219,6 +219,328 @@ def _some_permutations(items, max_count=5):
     bt()
     return res if res else [items]
 
+
+# Aturan 1: Operasi seleksi konjungtif dapat diuraikan menjadi urutan seleksi
+# σ₁∧₂(E) = σ₁(σ₂(E))
+def decompose_conjunctive_selection(node: QueryTree) -> QueryTree:
+    if node.type != "SIGMA" or not node.val:
+        return node
+    
+    if " AND " in node.val.upper():
+        conditions = re.split(r'\s+AND\s+', node.val, flags=re.IGNORECASE)
+        
+        current = node.childs[0] if node.childs else None
+        
+        for cond in reversed(conditions):
+            sigma = QueryTree("SIGMA", cond.strip())
+            if current:
+                sigma.add_child(current)
+            current = sigma
+        
+        if node.parent:
+            node.parent.replace_child(node, current)
+            current.parent = node.parent
+        else:
+            current.parent = None
+        
+        return current
+    return node
+
+# Aturan 2: Operasi seleksi bersifat komutatif
+# σ₁(σ₂(E)) = σ₂(σ₁(E))
+def swap_selection_order(node: QueryTree) -> QueryTree:
+    if node.type == "SIGMA" and node.childs and node.childs[0].type == "SIGMA":
+        sigma1_val = node.val
+        sigma2 = node.childs[0]
+        sigma2_val = sigma2.val
+        child_of_sigma2 = sigma2.childs[0] if sigma2.childs else None
+        
+        new_sigma1 = QueryTree("SIGMA", sigma1_val)
+        if child_of_sigma2:
+            new_sigma1.add_child(child_of_sigma2)
+        
+        new_sigma2 = QueryTree("SIGMA", sigma2_val)
+        new_sigma2.add_child(new_sigma1)
+
+        if node.parent:
+            node.parent.replace_child(node, new_sigma2)
+            new_sigma2.parent = node.parent
+        else:
+            new_sigma2.parent = None
+        
+        return new_sigma2
+    
+    return node
+
+# Aturan 3: Hanya proyeksi terakhir dalam urutan proyeksi yang diperlukan
+# ΠL₁(ΠL₂(...ΠLn(E))) = ΠL₁(E)
+def eliminate_redundant_projections(node: QueryTree) -> QueryTree:
+    if node.type == "PROJECT" and node.childs and node.childs[0].type == "PROJECT":
+        current = node.childs[0]
+        
+        while current.childs and current.childs[0].type == "PROJECT":
+            current = current.childs[0]
+        
+        if current.childs:
+            node.childs = [current.childs[0]]
+            current.childs[0].parent = node
+        
+        return node
+    
+    return node
+
+# Aturan 4a: Distribusi seleksi terhadap join (kondisi hanya untuk satu tabel)
+# σθ₀(E₁⋈E₂) = (σθ₀(E₁)) ⋈ E₂
+# WIP ini, masih bingung cara ambil atribut mana punya tabel siapa
+def push_selection_through_join_single(node: QueryTree) -> QueryTree:
+    if node.type != "SIGMA" or not node.childs or node.childs[0].type != "JOIN":
+        return node
+    
+    join_node = node.childs[0]
+    if len(join_node.childs) < 2:
+        return node
+    
+    left_table = join_node.childs[0]
+    right_table = join_node.childs[1]
+    
+
+    #masih kayak gini
+    left_tables = _tables_under(left_table)
+    right_tables = _tables_under(right_table)
+    condition = node.val
+    belongs_to_left = any(table in condition for table in left_tables)
+    belongs_to_right = any(table in condition for table in right_tables)
+    
+    if belongs_to_left and not belongs_to_right:
+        sigma_left = QueryTree("SIGMA", condition)
+        sigma_left.add_child(left_table)
+        
+        join_node.childs[0] = sigma_left
+        sigma_left.parent = join_node
+        
+
+        if node.parent:
+            node.parent.replace_child(node, join_node)
+            join_node.parent = node.parent
+        else:
+            join_node.parent = None
+        
+        return join_node
+    
+    elif belongs_to_right and not belongs_to_left:
+        sigma_right = QueryTree("SIGMA", condition)
+        sigma_right.add_child(right_table)
+        
+        join_node.childs[1] = sigma_right
+        sigma_right.parent = join_node
+        
+        if node.parent:
+            node.parent.replace_child(node, join_node)
+            join_node.parent = node.parent
+        else:
+            join_node.parent = None
+        
+        return join_node
+    
+    return node
+
+# Aturan 4b: Distribusi seleksi terhadap join (kondisi untuk kedua tabel)
+# σ(θ₁∧θ₂)(E₁⋈E₂) = (σθ₁(E₁)) ⋈ (σθ₂(E₂))
+# sama masih WIP
+def push_selection_through_join_split(node: QueryTree) -> QueryTree:
+    if node.type != "SIGMA" or not node.childs or node.childs[0].type != "JOIN":
+        return node
+    
+    if " AND " not in node.val.upper():
+        return node
+    
+    join_node = node.childs[0]
+    if len(join_node.childs) < 2:
+        return node
+    
+    left_table = join_node.childs[0]
+    right_table = join_node.childs[1]
+    
+    left_tables = _tables_under(left_table)
+    right_tables = _tables_under(right_table)
+    
+    conditions = re.split(r'\s+AND\s+', node.val, flags=re.IGNORECASE)
+    
+    left_conditions = []
+    right_conditions = []
+    mixed_conditions = []
+    
+    for cond in conditions:
+        belongs_to_left = any(table in cond for table in left_tables)
+        belongs_to_right = any(table in cond for table in right_tables)
+        
+        if belongs_to_left and not belongs_to_right:
+            left_conditions.append(cond.strip())
+        elif belongs_to_right and not belongs_to_left:
+            right_conditions.append(cond.strip())
+        else:
+            mixed_conditions.append(cond.strip())
+    
+    if left_conditions or right_conditions:
+        if left_conditions:
+            left_cond = " AND ".join(left_conditions)
+            sigma_left = QueryTree("SIGMA", left_cond)
+            sigma_left.add_child(left_table)
+            join_node.childs[0] = sigma_left
+            sigma_left.parent = join_node
+        
+        if right_conditions:
+            right_cond = " AND ".join(right_conditions)
+            sigma_right = QueryTree("SIGMA", right_cond)
+            sigma_right.add_child(right_table)
+            join_node.childs[1] = sigma_right
+            sigma_right.parent = join_node
+        
+        if mixed_conditions:
+            node.val = " AND ".join(mixed_conditions)
+            return node
+        else:
+            if node.parent:
+                node.parent.replace_child(node, join_node)
+                join_node.parent = node.parent
+            else:
+                join_node.parent = None
+            return join_node
+    
+    return node
+
+# Aturan 5a: Distribusi proyeksi terhadap join (simple case)
+# ΠL₁∪L₂(E₁⋈E₂) = (ΠL₁(E₁)) ⋈ (ΠL₂(E₂))
+def push_projection_through_join_simple(node: QueryTree) -> QueryTree:
+    if node.type != "PROJECT" or not node.childs or node.childs[0].type != "JOIN":
+        return node
+    
+    join_node = node.childs[0]
+    if len(join_node.childs) < 2:
+        return node
+    
+    left_table = join_node.childs[0]
+    right_table = join_node.childs[1]
+    
+    left_tables = _tables_under(left_table)
+    right_tables = _tables_under(right_table)
+    
+    proj_cols = [c.strip() for c in node.val.split(",")]
+    
+    left_cols = []
+    right_cols = []
+    
+    for col in proj_cols:
+        belongs_to_left = any(table in col for table in left_tables)
+        belongs_to_right = any(table in col for table in right_tables)
+        
+        if belongs_to_left:
+            left_cols.append(col)
+        if belongs_to_right:
+            right_cols.append(col)
+    
+    if left_cols and right_cols:
+        if left_cols:
+            left_proj = QueryTree("PROJECT", ", ".join(left_cols))
+            left_proj.add_child(left_table)
+            join_node.childs[0] = left_proj
+            left_proj.parent = join_node
+        
+        if right_cols:
+            right_proj = QueryTree("PROJECT", ", ".join(right_cols))
+            right_proj.add_child(right_table)
+            join_node.childs[1] = right_proj
+            right_proj.parent = join_node
+        
+        if node.parent:
+            node.parent.replace_child(node, join_node)
+            join_node.parent = node.parent
+        else:
+            join_node.parent = None
+        
+        return join_node
+    
+    return node
+
+# Aturan 5b: Distribusi proyeksi terhadap join (dengan atribut join)
+# ΠL₁∪L₂(E₁⋈θE₂) = ΠL₁∪L₂((ΠL₁∪L₃(E₁)) ⋈θ (ΠL₂∪L₄(E₂)))
+def push_projection_through_join_with_join_attrs(node: QueryTree) -> QueryTree:
+    if node.type != "PROJECT" or not node.childs or node.childs[0].type != "JOIN":
+        return node
+    
+    join_node = node.childs[0]
+    if len(join_node.childs) < 2:
+        return node
+    
+    if not _is_theta(join_node):
+        return node
+    
+    left_table = join_node.childs[0]
+    right_table = join_node.childs[1]
+    
+
+    left_tables = _tables_under(left_table)
+    right_tables = _tables_under(right_table)
+    
+    proj_cols = [c.strip() for c in node.val.split(",")]
+    
+
+    theta_condition = _theta_pred(join_node)
+    join_attrs = _extract_attributes_from_condition(theta_condition)
+    
+    left_cols = []
+    right_cols = []
+    left_join_attrs = []
+    right_join_attrs = []
+    
+    for col in proj_cols:
+        belongs_to_left = any(table in col for table in left_tables)
+        belongs_to_right = any(table in col for table in right_tables)
+        
+        if belongs_to_left:
+            left_cols.append(col)
+        if belongs_to_right:
+            right_cols.append(col)
+    
+    for attr in join_attrs:
+        belongs_to_left = any(table in attr for table in left_tables)
+        belongs_to_right = any(table in attr for table in right_tables)
+        
+        if belongs_to_left and attr not in left_cols:
+            left_join_attrs.append(attr)
+        if belongs_to_right and attr not in right_cols:
+            right_join_attrs.append(attr)
+    
+    if left_cols or right_cols:
+        # Left projection
+        left_all = left_cols + left_join_attrs
+        if left_all:
+            left_proj = QueryTree("PROJECT", ", ".join(left_all))
+            left_proj.add_child(left_table)
+            join_node.childs[0] = left_proj
+            left_proj.parent = join_node
+        
+        # Right projection
+        right_all = right_cols + right_join_attrs
+        if right_all:
+            right_proj = QueryTree("PROJECT", ", ".join(right_all))
+            right_proj.add_child(right_table)
+            join_node.childs[1] = right_proj
+            right_proj.parent = join_node
+        
+        return node
+    
+    return node
+
+# HELPER SEMENTARA
+def _extract_attributes_from_condition(condition: str) -> list:
+    if not condition:
+        return []
+    
+    pattern = r'\b\w+\.\w+\b'
+    matches = re.findall(pattern, condition)
+    return matches
+
 def validate_query(query: str) -> tuple:
 
     query = query.strip()

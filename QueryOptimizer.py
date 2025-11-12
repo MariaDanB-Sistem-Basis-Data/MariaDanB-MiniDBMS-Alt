@@ -23,7 +23,14 @@ from helper.helper import (
     _extract_table_delete,
     _extract_table_insert,
     _extract_columns_insert,
-    _extract_values_insert
+    _extract_values_insert,
+    decompose_conjunctive_selection,
+    swap_selection_order,
+    eliminate_redundant_projections,
+    push_selection_through_join_single,
+    push_selection_through_join_split,
+    push_projection_through_join_simple,
+    push_projection_through_join_with_join_attrs
 )
 
 from helper.stats import get_stats
@@ -326,3 +333,38 @@ class OptimizationEngine:
         root = parsed_query.query_tree
         stats = get_stats()
         return plan_cost(root, stats)
+    
+    def optimize_query_non_join(self, pq: ParsedQuery) -> ParsedQuery:
+        if not pq or not pq.query_tree:
+            return pq
+        
+        root = pq.query_tree
+        # nyobain aja max iterasi 5
+        max_iterations = 5
+        for _ in range(max_iterations):
+            old_root = root
+            
+            root = self._apply_non_join_rules(root)
+            
+            if root == old_root:
+                break
+        
+        return ParsedQuery(pq.query, root)
+    
+    def _apply_non_join_rules(self, node: QueryTree) -> QueryTree:
+        if not node:
+            return node
+        
+        # rekursif
+        for i, child in enumerate(node.childs):
+            node.childs[i] = self._apply_non_join_rules(child)
+        
+        node = decompose_conjunctive_selection(node)
+        node = eliminate_redundant_projections(node)
+        node = swap_selection_order(node)
+        node = push_selection_through_join_single(node)
+        node = push_selection_through_join_split(node)
+        node = push_projection_through_join_simple(node)
+        node = push_projection_through_join_with_join_attrs(node)
+        
+        return node
