@@ -36,3 +36,6 @@ uv venv --python 3.12 && uv pip sync pyproject.toml
    ```sh
    uv run Sync.py
    ```
+
+> [!NOTE]
+> Tentative (dev will based on concurrency control manager - TBA)
