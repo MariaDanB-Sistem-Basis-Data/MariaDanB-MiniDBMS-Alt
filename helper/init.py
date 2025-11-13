@@ -9,6 +9,15 @@ from helper.schema_manager import SchemaManager
 from helper.row_serializer import RowSerializer
 from helper.slotted_page import SlottedPage  
 
+os.makedirs("data", exist_ok=True)
+
+schema_path = os.path.join("data", "schema.dat")
+if not os.path.exists(schema_path):
+    with open(schema_path, "wb") as f:
+        pass  # just create an empty file
+
+
+
 
 student = Schema()
 student.add_attribute("StudentID", "int", 4)
