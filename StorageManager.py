@@ -107,8 +107,98 @@ class StorageManager:
 
 
     def write_block(self, data_write):
+        table = data_write.table
+        column = data_write.column
+        conditions = data_write.conditions
+        new_value = data_write.new_value
+
+        schema = self.schema_manager.get_table_schema(table)
+        if schema is None:
+            raise ValueError(f"Tabel '{table}' tidak ditemukan")
+
+        table_path = os.path.join(self.base_path, f"{table}.dat")
+        if not os.path.exists(table_path):
+            raise FileNotFoundError(f"File data '{table_path}' tidak ditemukan")
+
+        if column is None and not conditions:
+            return self._insert_record(table_path, schema, new_value)
+        else:
+            schema_attrs = [attr["name"] for attr in schema.get_attributes()] 
+            if column != "*" and column is not None:
+                if isinstance(column, str):
+                    column = [column]
+                for col in column:
+                    if col not in schema_attrs:
+                        raise ValueError(f"Kolom '{col}' tidak ada di tabel '{table}'")
+            
+            if conditions:
+                for cond in conditions:
+                    if cond.column not in schema_attrs:
+                        raise ValueError(f"Kolom '{cond.column}' tidak ada di tabel '{table}'")   
+            return self._update_record(table_path, schema, conditions, column, new_value)
+
+    def _insert_record(self, table_path, schema, new_record):
+        record_bytes = self.row_serializer.serialize(schema, new_record)
+
+        with open(table_path, "rb+") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            if file_size == 0:
+                page = SlottedPage()
+            else:
+                f.seek(file_size - PAGE_SIZE)
+                page_bytes = f.read(PAGE_SIZE)
+                page = SlottedPage()
+                page.load(page_bytes)
+
+            try:
+                page.add_record(record_bytes)
+                f.seek(file_size - PAGE_SIZE)
+            except Exception:
+                f.seek(0, os.SEEK_END)
+                page = SlottedPage()
+                page.add_record(record_bytes)
+
+            f.write(page.serialize())
         
-        pass
+        return 1
+
+    def _update_record(self, table_path, schema, conditions, column, new_value):
+        rows_affected = 0
+
+        if not isinstance(new_value, dict):
+            if isinstance(column, list) and len(column) == 1:
+                new_value = {column[0]: new_value}
+            elif isinstance(column, str):
+                new_value = {column: new_value}
+            else:
+                raise ValueError("new_value must be a dictionary")
+        
+        with open(table_path, "rb+") as f:
+            pages = []
+            while page_bytes := f.read(PAGE_SIZE):
+                page = SlottedPage()
+                page.load(page_bytes)
+
+                for i in range(page.record_count):
+                    record_bytes = page.get_record(i)
+                    record = self.row_serializer.deserialize(schema, record_bytes)
+
+                    if self._match_all(record, conditions):
+                        for col in column:
+                            record[col] = new_value[col]
+
+                        new_record_bytes = self.row_serializer.serialize(schema, record)
+                        page.update_record(i, new_record_bytes)
+                        rows_affected += 1
+                
+                pages.append(page)
+        
+            f.seek(0)
+            for page in pages:
+                f.write(page.serialize())
+            
+        return rows_affected
 
     def delete_block(self, data_deletion):
         # Implementation for deleting a block of data based on the data_deletion parameters

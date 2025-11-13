@@ -99,9 +99,9 @@ def write_with_pages(table_name, schema, records):
     print(f"Wrote {len(records)} records into {len(pages)} page(s): {file_path}")
 
 
-write_with_pages("Student", student, students)
-write_with_pages("Course", course, courses)
-write_with_pages("Attends", attends, attends_records)
+write_with_pages("student", student, students)
+write_with_pages("course", course, courses)
+write_with_pages("attends", attends, attends_records)
 
 
 loader = SchemaManager()
