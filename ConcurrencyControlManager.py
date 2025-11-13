@@ -1,7 +1,10 @@
-from models.Transaction import Transaction
-from models.Response import Response
-from models.Enums import Action
-from models.DeadlockDetector import DeadlockDetector
+import random
+import time
+
+from model.Transaction import Transaction
+from model.Response import Response
+from model.Enums import Action, TransactionStatus
+from model.DeadlockDetector import DeadlockDetector
 
 # Dummy Row class untuk sementara (karena belum didefinisikan)
 class Row:
@@ -17,7 +20,20 @@ class ConcurrencyControlManager:
 
     def begin_transaction(self) -> int:
         """Memulai transaksi baru dan mengembalikan transaction_id."""
-        print(f"Transaksi dimulai.")
+        print("[CCM] Begin transaction called")
+
+        transaction_id = random.randint(1, 100)
+        while transaction_id in self.transaction_table:
+            transaction_id = random.randint(1, 100)
+
+        transaction = Transaction(
+            transaction_id=transaction_id,
+            status=TransactionStatus.ACTIVE,
+            start_time=time.time(),
+        )
+        self.transaction_table[transaction_id] = transaction
+
+        return transaction_id
 
     def log_object(self, object: Row, transaction_id: int) -> None:
         """Mencatat objek (Row) yang diakses oleh transaksi."""
