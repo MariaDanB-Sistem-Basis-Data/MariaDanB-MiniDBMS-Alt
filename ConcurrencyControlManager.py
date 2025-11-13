@@ -6,7 +6,7 @@ from model.Response import Response
 from model.Enums import Action, TransactionStatus
 from model.DeadlockDetector import DeadlockDetector
 
-# Dummy Row class untuk sementara (karena belum didefinisikan)
+# sementara
 class Row:
     def __init__(self, name: str):
         self.name = name
@@ -37,11 +37,11 @@ class ConcurrencyControlManager:
 
     def log_object(self, object: Row, transaction_id: int) -> None:
         """Mencatat objek (Row) yang diakses oleh transaksi."""
-        print(f"[CCM] Mencatat akses ke {object.name} oleh Transaksi {transaction_id}")
+        print(f"Mencatat akses ke {object.name} oleh Transaksi {transaction_id}")
 
     def validate_object(self, object: Row, transaction_id: int, action: Action) -> Response:
         """Memvalidasi apakah transaksi boleh melakukan aksi tertentu pada objek."""
-        print(f"[CCM] Memvalidasi {action.name} pada {object.name} untuk T{transaction_id}")
+        print(f"Memvalidasi {action.name} pada {object.name} untuk T{transaction_id}")
         return Response(True, f"{action.name} pada {object.name} divalidasi untuk T{transaction_id}")
 
     def end_transaction(self, transaction_id: int) -> None:
