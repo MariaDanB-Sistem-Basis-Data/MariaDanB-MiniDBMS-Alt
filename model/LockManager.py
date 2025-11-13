@@ -2,9 +2,9 @@ from helper.Operation import Operation
 from helper.Resource import Resource
 class LockManager:
 	def __init__(self):
-		self.resources = {}
+		self.resources: dict[str, Resource] = {}
 
-	def _get_resource(self, resource_id):
+	def _get_resource(self, resource_id: str) -> Resource:
 		# nambah resource ke list resoruce
 		if resource_id not in self.resources:
 			self.resources[resource_id] = Resource(resourceName=resource_id)
@@ -48,7 +48,7 @@ class LockManager:
 			return False
 		return False
 
-	def release_locks(self, transaction_id):
+	def release_locks(self, transaction_id:int) -> None:
 		for res in self.resources.values():
 			if transaction_id in res.lockedBy:
 				res.remove_locker(transaction_id)
@@ -58,22 +58,12 @@ class LockManager:
 					if res.lockMode == 'X' and len(res.lockedBy) > 1:
 						res.set_lock('S')
 
-	def resource_status(self, resource_id):
-		res = self._get_resource(resource_id)
-		return {
-			'resource_id': resource_id,
-			'lockMode': res.lockMode,
-			'lockedBy': set(res.lockedBy)
-		}
 
-	def all_locks(self):
-		return {rid: self.resource_status(rid) for rid in self.resources}
+	def all_locks(self) -> dict[str, Resource]:
+		return self.resources
 
-	def log_object(self):
+	def log_object(self) -> dict[str, dict[str, Resource]]:
 		serial = {}
 		for rid, res in self.resources.items():
-			serial[rid] = {
-				'lockMode': res.lockMode,
-				'lockedBy': list(res.lockedBy)
-			}
+			serial[rid] = {res}
 		return {'resources': serial}
