@@ -228,9 +228,151 @@ class QueryExecutor:
         
         return Rows.from_list(filtered_data)
 
-    # placeholder untuk JOIN operation
+    # apply join operation - support JOIN, NATURAL_JOIN, and THETA_JOIN
     def _apply_join(self, left_data: Rows, right_data: Rows, condition: str, join_type: str) -> Rows:
-        return Rows.from_list([{"info": "JOIN operation - to be implemented"}])
+        if not left_data.data or not right_data.data:
+            return Rows.from_list([])
+        
+        result = []
+        
+        if join_type == "JOIN":
+            # inner join: hanya me-return baris yang memenuhi kondisi join
+            result = self._theta_join(left_data.data, right_data.data, condition)
+        
+        elif join_type == "NATURAL_JOIN":
+            # natural join: join berdasarkan kolom dengan value yang sama
+            result = self._natural_join(left_data.data, right_data.data)
+        
+        elif join_type == "THETA_JOIN":
+            # theta join: join berdasarkan kondisi tertentu (=, <, >, <=, >=, !=)
+            result = self._theta_join(left_data.data, right_data.data, condition)
+        
+        return Rows.from_list(result)
+    
+    # natural join berdasarkan kolom dengan nilai yang sama
+    def _natural_join(self, left_rows: list, right_rows: list) -> list:
+        result = []
+        
+        if not left_rows or not right_rows:
+            return result
+        
+        left_first = left_rows[0]
+        right_first = right_rows[0]
+        
+        if not isinstance(left_first, dict) or not isinstance(right_first, dict):
+            return result
+        
+        common_cols = set(left_first.keys()) & set(right_first.keys())
+        
+        # join rows berdasarkan common columns
+        for left_row in left_rows:
+            for right_row in right_rows:
+                # cek apakah semua common columns memiliki nilai yang sama
+                match = all(left_row.get(col) == right_row.get(col) for col in common_cols)
+                
+                if match:
+                    # combine rows, common columns dari left_row
+                    combined = {**left_row}
+                    for key, val in right_row.items():
+                        if key not in common_cols:
+                            combined[key] = val
+                    result.append(combined)
+        
+        return result
+    
+    # theta join berdasarkan kondisi
+    def _theta_join(self, left_rows: list, right_rows: list, condition: str) -> list:
+        result = []
+        
+        if not condition:
+            # jika tidak ada condition, return cartesian product
+            return self._cartesian_join(left_rows, right_rows)
+        
+        # parse condition: format "left_col op right_col" atau "left_col op value"
+        operators = [">=", "<=", "!=", "=", ">", "<"]
+        operator = None
+        left_col = None
+        right_col_or_value = None
+        
+        for op in operators:
+            if op in condition:
+                parts = condition.split(op)
+                left_col = parts[0].strip()
+                right_col_or_value = parts[1].strip().strip("'\"")
+                operator = op
+                break
+        
+        if not operator or not left_col:
+            return self._cartesian_join(left_rows, right_rows)
+        
+        # join rows berdasarkan kondisi
+        for left_row in left_rows:
+            for right_row in right_rows:
+                if isinstance(left_row, dict) and isinstance(right_row, dict):
+                    if left_col in left_row:
+                        left_val = left_row[left_col]
+                        
+                        # cek apakah right_col_or_value adalah kolom di right_row
+                        if right_col_or_value in right_row:
+                            right_val = right_row[right_col_or_value]
+                        else:
+                            right_val = right_col_or_value
+                        
+                        # evaluasi condition
+                        if self._evaluate_condition(left_val, operator, right_val):
+                            combined = {**left_row, **right_row}
+                            result.append(combined)
+        
+        return result
+    
+    # cartesian product untuk join
+    def _cartesian_join(self, left_rows: list, right_rows: list) -> list:
+        result = []
+        for left_row in left_rows:
+            for right_row in right_rows:
+                if isinstance(left_row, dict) and isinstance(right_row, dict):
+                    combined = {**left_row, **right_row}
+                    result.append(combined)
+        return result
+    
+    # evaluasi kondisi untuk join
+    def _evaluate_condition(self, left_val, operator: str, right_val) -> bool:
+        try:
+            # coba convert ke float untuk numeric comparison
+            left_num = float(left_val)
+            right_num = float(right_val)
+            
+            if operator == "=":
+                return left_num == right_num
+            elif operator == "!=":
+                return left_num != right_num
+            elif operator == ">":
+                return left_num > right_num
+            elif operator == "<":
+                return left_num < right_num
+            elif operator == ">=":
+                return left_num >= right_num
+            elif operator == "<=":
+                return left_num <= right_num
+        except (ValueError, TypeError):
+            # string comparison jika tidak bisa convert ke number
+            left_str = str(left_val)
+            right_str = str(right_val)
+            
+            if operator == "=":
+                return left_str == right_str
+            elif operator == "!=":
+                return left_str != right_str
+            elif operator == ">":
+                return left_str > right_str
+            elif operator == "<":
+                return left_str < right_str
+            elif operator == ">=":
+                return left_str >= right_str
+            elif operator == "<=":
+                return left_str <= right_str
+        
+        return False
 
     # apply CARTESIAN product
     def _apply_cartesian(self, left_data: Rows, right_data: Rows) -> Rows:
@@ -340,6 +482,39 @@ class QueryExecutor:
     def execute_commit(self, query: str) -> Union[Rows, int]:
         return Rows.from_list(["COMMIT - to be implemented"])
 
-    # placeholder ABORT
+    # abort transaction - rollback all changes in current transaction
     def execute_abort(self, query: str) -> Union[Rows, int]:
-        return Rows.from_list(["ABORT - to be implemented"])
+        try:
+            # abort the current transaction and rollback all changes
+            # this will discard any modifications made within the transaction
+            abort_result = self._rollback_transaction()
+            
+            if abort_result:
+                return Rows.from_list(["ABORT completed successfully"])
+            else:
+                return Rows.from_list(["ABORT failed - no active transaction"])
+                
+        except Exception as e:
+            print(f"Error executing ABORT: {e}")
+            return -1
+    
+    # rollback all changes made in the current transaction
+    def _rollback_transaction(self) -> bool:
+        try:
+            # check if transaction is active
+            if not hasattr(self, '_transaction_active') or not self._transaction_active:
+                return False
+            
+            # clear any pending changes
+            if hasattr(self, '_transaction_changes'):
+                self._transaction_changes.clear()
+            
+            # mark transaction as inactive
+            self._transaction_active = False
+            
+            print("Transaction rolled back successfully")
+            return True
+            
+        except Exception as e:
+            print(f"Error rolling back transaction: {e}")
+            return False
