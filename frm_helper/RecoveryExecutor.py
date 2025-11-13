@@ -1,5 +1,5 @@
 from typing import List
-from ..frm_model import LogEntry, LogEntryType, RecoveryCriteria
+from frm_model import LogEntry, LogEntryType, RecoveryCriteria
 
 
 class RecoveryExecutor:

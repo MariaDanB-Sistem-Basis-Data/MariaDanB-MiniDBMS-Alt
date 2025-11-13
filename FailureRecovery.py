@@ -74,3 +74,7 @@ class FailureRecoveryManager:
 
 def getFailureRecoveryManager() -> FailureRecoveryManager:
     return FailureRecoveryManager()
+
+if __name__ == "__main__":
+    frm = getFailureRecoveryManager()
+    print("FailureRecoveryManager initialized")
