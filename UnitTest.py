@@ -1,13 +1,5 @@
-from ConcurrencyControlManager import ConcurrencyControlManager
-
-
-def test_begin_transaction():
-    manager = ConcurrencyControlManager()
-    tid = manager.begin_transaction()
-
-    assert tid in manager.transaction_table
-    print(f"begin_transaction returned {tid}")
+from tests.BeginTransactionTest import run_begin_transaction_tests
 
 
 if __name__ == "__main__":
-    test_begin_transaction()
+    run_begin_transaction_tests()
