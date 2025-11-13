@@ -1,7 +1,7 @@
 from typing import List, Optional
 from datetime import datetime
 
-from ..model import LogEntry, LogEntryType, Checkpoint, ExecutionResult
+from ..frm_model import LogEntry, LogEntryType, Checkpoint, ExecutionResult
 from .LogSerializer import LogSerializer
 from .Singleton import singleton
 
