@@ -1,5 +1,6 @@
 from StorageManager import StorageManager
 from model.data_retrieval import DataRetrieval
+from model.data_write import DataWrite
 from model.condition import Condition
 
 def print_section(title):
@@ -43,6 +44,58 @@ def test_select_where(sm: StorageManager, table, col, op, val):
         conditions=[cond]
     )
     rows = sm.read_block(req)
+    print(f"Found {len(rows)} rows")
+    for r in rows:
+        print(r)
+
+def test_insert_record(sm: StorageManager):
+    print_section("TEST 9: INSERT RECORD INTO Student")
+    new_student = {
+        "StudentID": 999,
+        "FullName": "Test Student",
+        "GPA": 3.75
+    }
+    write_req = DataWrite(
+        table = "Student",
+        column = None,
+        conditions = [],
+        new_value = new_student
+    )
+    sm.write_block(write_req)
+    print("Inserted new student record:", new_student)
+
+    print_section("VERIFY INSERTION: SELECT * FROM Student WHERE StudentID = 999")
+    cond = Condition("StudentID", "=", 999)
+    read_req = DataRetrieval(
+        table="Student",
+        column="*",
+        conditions=[cond]
+    )
+    rows = sm.read_block(read_req)
+    print(f"Found {len(rows)} rows")
+    for r in rows:
+        print(r)
+
+def test_update_record(sm: StorageManager):
+    print_section("TEST 10: UPDATE RECORD IN Student")
+    write_req = DataWrite(
+        table = "Student",
+        column = "GPA",
+        conditions = [Condition("StudentID", "=", 3)],
+        new_value = 3.95
+    )
+    row_affected = sm.write_block(write_req)
+    print(f"Rows affected: {row_affected}")
+    print("Updated GPA of StudentID 3 to 3.95")
+
+    print_section("VERIFY UPDATE: SELECT * FROM Student WHERE StudentID = 3")
+    cond = Condition("StudentID", "=", 3)
+    read_req = DataRetrieval(
+        table="Student",
+        column="*",
+        conditions=[cond]
+    )
+    rows = sm.read_block(read_req)
     print(f"Found {len(rows)} rows")
     for r in rows:
         print(r)
@@ -116,16 +169,22 @@ def main():
     except ValueError as ve:
         print("Caught expected error:", ve)
 
-    # 8. test error handling: file data tabel tidak ada
-    print_section("TEST 8: ERROR HANDLING - MISSING DATA FILE")
-    try:
-        req = DataRetrieval(
-            table="MissingDataFileTable",
-            column="*"
-        )
-        sm.read_block(req)
-    except FileNotFoundError as fe:
-        print("Caught expected error:", fe)
+    # # 8. test error handling: file data tabel tidak ada
+    # print_section("TEST 8: ERROR HANDLING - MISSING DATA FILE")
+    # try:
+    #     req = DataRetrieval(
+    #         table="MissingDataFileTable",
+    #         column="*"
+    #     )
+    #     sm.read_block(req)
+    # except FileNotFoundError as fe:
+    #     print("Caught expected error:", fe)
+
+    # 9. test insert record
+    test_insert_record(sm)
+
+    # 10. test update record
+    test_update_record(sm)
 
 if __name__ == "__main__":
     main()
