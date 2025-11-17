@@ -28,6 +28,18 @@ class QueryProcessor:
             elif query_type == QueryType.UPDATE:
                 result_data = self.query_executor.execute_update(query)
 
+            elif query_type == QueryType.DELETE:
+                result_data = self.query_executor.execute_delete(query)
+
+            elif query_type == QueryType.INSERT_INTO:
+                result_data = self.query_executor.execute_insert(query)
+
+            elif query_type == QueryType.CREATE_TABLE:
+                result_data = self.query_executor.execute_create_table(query)
+
+            elif query_type == QueryType.DROP_TABLE:
+                result_data = self.query_executor.execute_drop_table(query)
+
             elif query_type == QueryType.BEGIN_TRANSACTION:
                 result_data =  self.query_executor.execute_begin_transaction(query)
             
@@ -36,6 +48,9 @@ class QueryProcessor:
 
             elif query_type == QueryType.ABORT:
                 result_data = self.query_executor.execute_abort(query)
+
+            elif query_type == QueryType.ROLLBACK:
+                result_data = self.query_executor.execute_rollback(query)
 
             elif query_type in DATA_QUERIES or query_type in TRANSACTION_QUERIES:
                 return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=f"Cek helper/query_utils.py, harusnya ini query type dari bonus yg belum consider dikerjain (query_type: {query_type})", data=0, query=query)

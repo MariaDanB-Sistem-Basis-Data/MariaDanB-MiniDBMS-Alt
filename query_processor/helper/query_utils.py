@@ -27,7 +27,7 @@ DATA_QUERIES = {
     QueryType.DELETE,
     QueryType.INSERT_INTO,
     QueryType.CREATE_TABLE,
-    QueryType.DROP_TABLE
+    QueryType.DROP_TABLE,
 }
 
 TRANSACTION_QUERIES = {
@@ -55,7 +55,6 @@ def get_query_type(query: str) -> QueryType:
         return QueryType.DROP_TABLE
     elif q.startswith("BEGIN TRANSACTION"):
         return QueryType.BEGIN_TRANSACTION
-    
     elif q.startswith("SELECT"):
         return QueryType.SELECT
     elif q.startswith("UPDATE"):

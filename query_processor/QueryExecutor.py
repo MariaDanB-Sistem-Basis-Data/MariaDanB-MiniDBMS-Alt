@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, List
 
 from query_processor.model.Rows import Rows
 from storage_manager.StorageManager import StorageManager
@@ -387,6 +387,16 @@ class QueryExecutor:
 
     # placeholder untuk SORT operation (ORDER BY)
     def _apply_sort(self, data: Rows, column: str) -> Rows:
+        parts = column.strip().split()
+
+        column = parts[0]
+        is_desc = False
+
+        if len(parts) > 1 and parts[1].upper() == "DESC":
+            is_desc = True
+
+        # TODO: parts[1] bisa aja bukan ASC or DESC, tambah handling kalau bukan itu
+    
         return Rows.from_list([{"info": "SORT operation - to be implemented"}])
 
     # apply LIMIT operation
@@ -397,7 +407,6 @@ class QueryExecutor:
             return Rows.from_list(limited_data)
         except ValueError:
             return data
-
     # apply GROUP BY operation
     def _apply_group(self, data: Rows, column: str) -> Rows:
         return Rows.from_list([{"info": f"GROUP BY {column} - basic implementation"}])
@@ -474,6 +483,132 @@ class QueryExecutor:
         
         return None
 
+    # parse INSERT (dari optimizer) & panggil write_block dari storage manager
+    def execute_insert(self, query: str) -> Union[Rows, int]:
+        try:
+            parsed = None
+            try:
+                parsed = self.optimization_engine.parse_query(query)
+            except Exception:
+                parsed = None
+
+            table_name = None
+            cols = None
+            values = None
+
+            if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "INSERT":
+                val = parsed.query_tree.val or ""
+                parts = val.split("|", 2)
+                if len(parts) >= 1:
+                    table_name = parts[0].strip()
+                if len(parts) >= 2:
+                    cols = parts[1].strip()
+                if len(parts) == 3:
+                    values = parts[2].strip()
+            else:
+                return Rows.from_list(["INSERT parsing failed - parsed error"])
+
+            if not table_name:
+                return Rows.from_list(["INSERT parsing failed - no table found"])
+
+            # row dict
+            row_to_insert = {}
+            values_list = []
+            cols_list = []
+
+            if values:
+                values_list = [v.strip().strip("'\"") for v in values.split(",")]
+
+            if cols:
+                cols_list = [c.strip() for c in cols.split(",")]
+
+            if cols_list and values_list and len(cols_list) == len(values_list):
+                row_to_insert = dict(zip(cols_list, values_list))
+            elif values_list:
+                row_to_insert = {"values": values_list}
+
+            try:
+                data_write = DataWrite(table=table_name, column=None, conditions=[], new_value=row_to_insert)
+                res = self.storage_manager.write_block(data_write)
+
+                # StorageManager._insert_record returns 1 on success
+                if isinstance(res, int):
+                    return Rows.from_list([f"Inserted {res} rows"])
+                elif res:
+                    return Rows.from_list([f"Inserted rows via storage manager: {res}"])
+            except Exception as e:
+                print(f"Error calling StorageManager.write_block for insert: {e}")
+
+            # NOTE: fallback dummy, harusnya ga kepanggil
+            return Rows.from_list([f"DUMMY INSERT HIT"])
+
+        except Exception as e:
+            print(f"Error executing INSERT: {e}")
+            return -1
+
+    # parse DELETE (dari optimizer) & panggil delete_block dari storage manager
+    # NOTE,TODO: StorageManager.delete_block blum diimplement
+    def execute_delete(self, query: str) -> Union[Rows, int]:
+        """
+        # harusnya kaya gini sih nanti
+        try:
+            parsed = None
+            try:
+                parsed = self.optimization_engine.parse_query(query)
+            except Exception:
+                parsed = None
+
+            table_name = None
+            conditions = []
+
+            if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "DELETE":
+                current = parsed.query_tree
+                while current:
+                    t = getattr(current, "type", "").upper()
+                    if t == "SIGMA":
+                        if current.val:
+                            conditions.append(current.val)
+                    elif t == "TABLE":
+                        table_name = current.val
+                        break
+                    current = current.childs[0] if current.childs else None
+            else:
+                return Rows.from_list([f"DELETE parsing failed - parsed error"])
+
+            if not table_name:
+                return Rows.from_list([f"DELETE parsing failed - no table found"])
+
+            cond_objs = [self._parse_condition(c) for c in conditions] if conditions else []
+
+            try:
+                data_deletion = DataWrite(table=table_name, column="*", conditions=cond_objs, new_value=None)
+                res = self.storage_manager.delete_block(data_deletion)
+                # NOTE: If delete_block is implemented it should return an int or truthy result, kaya write_block
+                if isinstance(res, int):
+                    return Rows.from_list([f"Deleted {res} rows"])
+                elif res:
+                    return Rows.from_list([f"Deleted rows via storage manager: {res}"])
+            except Exception as e:
+                print(f"Error calling StorageManager.delete_block: {e}")
+
+            # NOTE: alasan sama, storage manager blum impelemnt delete_block
+            return Rows.from_list([f"DELETE not performed: storage manager delete_block not implemented for table '{table_name}' WHERE {conditions}"])
+
+        except Exception as e:
+            print(f"Error executing DELETE: {e}")
+            return -1
+        """
+        return Rows.from_list(["DELETE - to be implemented (info delete block)"])
+
+    # NOTE: lagi2, sepertinya emng kudu pahamin dulu kerjaan orang TT
+    def execute_create_table(self, query: str) -> Union[Rows, int]:
+        return Rows.from_list(["CREATE TABLE - to be implemented (info cara bikin tabel dari storagemngr)"])
+
+    def execute_drop_table(self, query: str) -> Union[Rows, int]:
+        return Rows.from_list(["DROP TABLE - to be implemented (info cara drop tabel dari storagemngr)"])
+
+
+
     # placeholder BEGIN TRANSACTION
     def execute_begin_transaction(self, query: str) -> Union[Rows, int]:
         return Rows.from_list(["BEGIN TRANSACTION - to be implemented"])
@@ -481,6 +616,12 @@ class QueryExecutor:
     # placeholder COMMIT 
     def execute_commit(self, query: str) -> Union[Rows, int]:
         return Rows.from_list(["COMMIT - to be implemented"])
+
+    # placeholder rollback
+    def execute_rollback(self, query: str) -> Union[Rows, int]:
+        # NOTE: di abort ada rollback otomatis?
+        return Rows.from_list(["ROLLBACK - to be implemented"])
+
 
     # abort transaction - rollback all changes in current transaction
     def execute_abort(self, query: str) -> Union[Rows, int]:

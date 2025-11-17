@@ -90,8 +90,35 @@ def demo_transaction_queries():
     if result.data != -1:
         print(f"   Result: {result.data.data}")
 
+def demo_insert_queries():
+    print("\n" + "="*70)
+    print("DEMO: INSERT QUERIES")
+    print("="*70)
+
+    qp = QueryProcessor()
+
+    # INSERT 1
+    print("\n1. INSERT single row:")
+    query = "INSERT INTO users (name, age, city) VALUES ('Charlie', 29, 'Bandung');"
+    print(f"   Query: {query}")
+    result = qp.execute_query(query)
+
+    print(f"   Result: {result.message}")
+    if result.data != -1:
+        print(f"   Info: {result.data.data}")
+
+    # verify
+    print("\n   Verifying INSERT with SELECT:")
+    verify = qp.execute_query("SELECT * FROM users WHERE name = 'Charlie';")
+    print(f"   SELECT Result: {verify.message}")
+    if verify.data != -1:
+        print(f"   Rows: {verify.data.rows_count}")
+        print(f"   Data: {verify.data.data}")
+
+
 if __name__ == "__main__":
     # demos
     demo_select_queries()
     demo_update_queries()
     demo_transaction_queries()
+    demo_insert_queries()
