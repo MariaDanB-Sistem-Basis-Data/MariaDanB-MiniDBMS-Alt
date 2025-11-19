@@ -4,6 +4,7 @@ from datetime import datetime
 from frm_model import LogEntry, LogEntryType, Checkpoint, ExecutionResult
 from .LogSerializer import LogSerializer
 from .Singleton import singleton
+from .Buffer import Buffer
 
 
 @singleton
@@ -15,7 +16,7 @@ class WriteAheadLog:
             self._logSerializer = LogSerializer(logFilePath)
             self._currentLogId = 0
             self._currentCheckpointId = 0
-            self._logBuffer: List[LogEntry] = []
+            self._logBuffer: Buffer[LogEntry] = Buffer()
             self.initialized = True
             self._loadCurrentState()
 
@@ -29,9 +30,9 @@ class WriteAheadLog:
             self._currentCheckpointId = max(cp.getCheckpointId() for cp in checkpoints)
 
     def appendLog(self, entry: LogEntry) -> None:
-        # Add log entry to WAL buffer 
-        # and persist to disk (note: salah?)
-        self._logBuffer.append(entry)
+        # Add log entry to WAL buffer
+        key = str(entry.getLogId())
+        self._logBuffer.put(key, entry, isDirty=True)
 
     def appendLogFromExecution(self, executionResult: ExecutionResult) -> LogEntry:
         # Create and append log entry from ExecutionResult
@@ -98,13 +99,15 @@ class WriteAheadLog:
 
     def flushBuffer(self) -> None:
         # Write buffered log entries to persistent storage
-        for entry in self._logBuffer:
+        dirty_entries = self._logBuffer.flushDirtyEntries()
+        for buf_entry in dirty_entries:
+            entry: LogEntry = buf_entry.getData()
             self._logSerializer.writeLogEntry(entry.toDict())
-        self._logBuffer.clear()
+            self._logBuffer.remove(buf_entry.getKey())
 
     def needsFlush(self, bufferSizeThreshold: int = 50) -> bool:
         # Check if log buffer should be flushed
-        return len(self._logBuffer) >= bufferSizeThreshold
+        return self._logBuffer.getSize() >= bufferSizeThreshold or self._logBuffer.isNearlyFull()
 
     def truncateBeforeCheckpoint(self, checkpointId: int) -> None:
         # Remove log entries before specified checkpoint (log maintenance)
@@ -133,7 +136,7 @@ class WriteAheadLog:
             "totalEntries": len(entries) + len(checkpoint_dicts),
             "currentLogId": self._currentLogId,
             "currentCheckpointId": self._currentCheckpointId,
-            "bufferSize": len(self._logBuffer),
+            "bufferSize": self._logBuffer.getSize(),
             "checkpointCount": len(checkpoint_dicts),
             "operationCount": sum(1 for e in entries if e.getEntryType() == LogEntryType.UPDATE),
         }
