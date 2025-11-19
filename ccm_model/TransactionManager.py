@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from ccm_model.Enums import TransactionState
+from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
 
 @dataclass
@@ -17,7 +17,7 @@ class TransactionManager:
         self.transactions.clear()
 
     def begin_transaction(self, transactionId: int) -> None:
-        self.transactions[transactionId] = Transaction(transaction_id=transactionId, status=TransactionState.ACTIVE)
+        self.transactions[transactionId] = Transaction(transaction_id=transactionId, status=TransactionStatus.ACTIVE)
 
     def get_transaction(self, transactionId: int) -> Transaction:
         if transactionId in self.transactions:
@@ -29,7 +29,7 @@ class TransactionManager:
     def commit_transaction(self, transactionId: int) -> bool:
         if (self.has_transaction(transactionId)):
             transaction =  self.get_transaction(transactionId)
-            transaction.status = TransactionState.COMMITTED
+            transaction.status = TransactionStatus.COMMITTED
             return True
 
     def abort_transaction(self, transactionId: int) -> bool:
@@ -37,7 +37,7 @@ class TransactionManager:
             transaction =  self.get_transaction(transactionId)
             if not transaction.can_be_aborted():
                 return False
-            transaction.status = TransactionState.ABORTED
+            transaction.status = TransactionStatus.ABORTED
             return True
 
     def remove_transaction(self, transactionId: int) -> bool:
@@ -60,9 +60,12 @@ class TransactionManager:
         return active_transactions_id
 
     def clearCompletedTransactions(self) -> int:
+        id_to_remove = []
         for transaction in self.transactions.values():
             if transaction.is_committed() or transaction.is_aborted():
-                del self.transactions[transaction.get_transaction_id()]
+                id_to_remove.append(transaction.get_transaction_id())
+        for transaction_id in id_to_remove:
+            self.remove_transaction(transaction_id)
 
     def getTransactionCount(self) -> int:
         return len(self.transactions)
@@ -75,7 +78,7 @@ class TransactionManager:
         return dict(self.transactions)
 
     def getStatistics(self) -> dict[str, int]:
-        stats: dict[str, int] = {state.name: 0 for state in TransactionState}
+        stats: dict[str, int] = {state.name: 0 for state in TransactionStatus}
         for t in self.transactions.values():
             state_name = t.get_state().name
             stats[state_name] = stats.get(state_name, 0) + 1
