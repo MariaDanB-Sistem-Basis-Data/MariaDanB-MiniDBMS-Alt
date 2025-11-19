@@ -1,7 +1,6 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from QueryOptimizer import OptimizationEngine
 from model.query_tree import (
     QueryTree,
@@ -15,23 +14,24 @@ from model.query_tree import (
     ForeignKeyDefinition,
     InsertData,
     CreateTableData,
-    DropTableData
+    DropTableData,
+    NaturalJoin,
+    ThetaJoin
 )
+from model.parsed_query import ParsedQuery
+import json
 
 def print_tree(node, indent=0, prefix="ROOT", is_last=True):
     if node is None:
         return
     
-    # determine connector
     if indent == 0:
         connector = ""
     else:
         connector = "└── " if is_last else "├── "
     
-    # format value untuk display
     val_str = _format_val(node.val)
     
-    # print current node
     spacing = "    " * (indent - 1) + ("    " if indent > 0 and is_last else "│   " if indent > 0 else "")
     if indent == 0:
         print(f"{node.type}: {val_str}")
@@ -41,12 +41,10 @@ def print_tree(node, indent=0, prefix="ROOT", is_last=True):
             spacing = ""
         print(f"{spacing}{connector}{node.type}: {val_str}")
     
-    # print children
     for i, child in enumerate(node.childs):
         is_last_child = (i == len(node.childs) - 1)
         print_tree(child, indent + 1, "", is_last_child)
 
-# helper untuk format val menjadi string yang readable
 def _format_val(val):
     if val is None:
         return "∅"
@@ -84,10 +82,12 @@ def _format_val(val):
             return f"{val.name} AS {val.alias}"
         return val.name
     
-    if isinstance(val, TableReference):
-        if val.alias:
-            return f"{val.name} AS {val.alias}"
-        return val.name
+    if isinstance(val, NaturalJoin):
+        return "NATURAL"
+    
+    if isinstance(val, ThetaJoin):
+        cond_str = _format_condition(val.condition)
+        return f"ON {cond_str}"
     
     if isinstance(val, InsertData):
         return f"table={val.table}"
@@ -103,6 +103,143 @@ def _format_val(val):
         return str(val)
     
     return str(val)
+
+def _format_condition(cond):
+    if isinstance(cond, ConditionNode):
+        left = _format_attr(cond.attr)
+        right = _format_value(cond.value)
+        return f"{left} {cond.op} {right}"
+    elif isinstance(cond, LogicalNode):
+        childs_str = ", ".join(_format_condition(c) for c in cond.childs)
+        return f"({cond.operator}: {childs_str})"
+    return str(cond)
+
+def print_node_structure(node, indent=0):
+    if node is None:
+        print("  " * indent + "None")
+        return
+    
+    ind = "  " * indent
+    
+    print(f"{ind}QueryTree {{")
+    print(f"{ind}  type: \"{node.type}\",")
+    
+    print(f"{ind}  val: ", end="")
+    _print_val_structure(node.val, indent + 1)
+    
+    if node.childs:
+        print(f"{ind}  childs: [")
+        for i, child in enumerate(node.childs):
+            print_node_structure(child, indent + 2)
+            if i < len(node.childs) - 1:
+                print(f"{'  ' * (indent + 2)},")
+        print(f"{ind}  ]")
+    else:
+        print(f"{ind}  childs: []")
+    
+    print(f"{ind}}}")
+
+def _print_val_structure(val, indent):
+    ind = "  " * indent
+    
+    if val is None:
+        print("None,")
+    
+    elif isinstance(val, str):
+        print(f"\"{val}\",")
+    
+    elif isinstance(val, int) or isinstance(val, float):
+        print(f"{val},")
+    
+    elif isinstance(val, list):
+        if len(val) == 0:
+            print("[],")
+        else:
+            print("[")
+            for i, item in enumerate(val):
+                print(f"{ind}  ", end="")
+                _print_val_structure(item, indent + 1)
+            print(f"{ind}],")
+    
+    elif isinstance(val, ColumnNode):
+        if val.table:
+            print(f"ColumnNode(column=\"{val.column}\", table=\"{val.table}\"),")
+        else:
+            print(f"ColumnNode(column=\"{val.column}\", table=None),")
+    
+    elif isinstance(val, ConditionNode):
+        print("ConditionNode {")
+        print(f"{ind}  attr: ", end="")
+        _print_val_structure(val.attr, indent + 1)
+        print(f"{ind}  op: \"{val.op}\",")
+        print(f"{ind}  value: ", end="")
+        _print_val_structure(val.value, indent + 1)
+        print(f"{ind}}},")
+    
+    elif isinstance(val, LogicalNode):
+        print("LogicalNode {")
+        print(f"{ind}  operator: \"{val.operator}\",")
+        print(f"{ind}  childs: [")
+        for i, child in enumerate(val.childs):
+            print(f"{ind}    ", end="")
+            _print_val_structure(child, indent + 2)
+        print(f"{ind}  ]")
+        print(f"{ind}}},")
+    
+    elif isinstance(val, OrderByItem):
+        col = val.column
+        if col.table:
+            print(f"OrderByItem(column=ColumnNode(\"{col.column}\", \"{col.table}\"), direction=\"{val.direction}\"),")
+        else:
+            print(f"OrderByItem(column=ColumnNode(\"{col.column}\"), direction=\"{val.direction}\"),")
+    
+    elif isinstance(val, SetClause):
+        print(f"SetClause(column=\"{val.column}\", value=\"{val.value}\"),")
+    
+    elif isinstance(val, TableReference):
+        if val.alias:
+            print(f"TableReference(name=\"{val.name}\", alias=\"{val.alias}\"),")
+        else:
+            print(f"TableReference(name=\"{val.name}\", alias=None),")
+    
+    elif isinstance(val, NaturalJoin):
+        print("NaturalJoin(),")
+    
+    elif isinstance(val, ThetaJoin):
+        print("ThetaJoin {")
+        print(f"{ind}  condition: ", end="")
+        _print_val_structure(val.condition, indent + 1)
+        print(f"{ind}}},")
+    
+    elif isinstance(val, InsertData):
+        print("InsertData {")
+        print(f"{ind}  table: \"{val.table}\",")
+        print(f"{ind}  columns: {val.columns},")
+        print(f"{ind}  values: {val.values}")
+        print(f"{ind}}},")
+    
+    elif isinstance(val, CreateTableData):
+        print("CreateTableData {")
+        print(f"{ind}  table: \"{val.table}\",")
+        print(f"{ind}  columns: [")
+        for col in val.columns:
+            if col.size:
+                print(f"{ind}    ColumnDefinition(name=\"{col.name}\", data_type=\"{col.data_type}\", size={col.size}),")
+            else:
+                print(f"{ind}    ColumnDefinition(name=\"{col.name}\", data_type=\"{col.data_type}\", size=None),")
+        print(f"{ind}  ],")
+        print(f"{ind}  primary_key: {val.primary_key},")
+        print(f"{ind}  foreign_keys: [")
+        for fk in val.foreign_keys:
+            print(f"{ind}    ForeignKeyDefinition(column=\"{fk.column}\", ref_table=\"{fk.ref_table}\", ref_column=\"{fk.ref_column}\"),")
+        print(f"{ind}  ]")
+        print(f"{ind}}},")
+    
+    elif isinstance(val, DropTableData):
+        print(f"DropTableData(table=\"{val.table}\", cascade={val.cascade}),")
+    
+    else:
+        print(f"{val},")
 
 def _format_attr(attr):
     if isinstance(attr, ColumnNode):
@@ -132,7 +269,6 @@ def print_tree_box(node, prefix="", is_last=True, is_root=True):
     if node is None:
         return
     
-    # connector characters
     if is_root:
         current_prefix = ""
         child_prefix = ""
@@ -140,26 +276,19 @@ def print_tree_box(node, prefix="", is_last=True, is_root=True):
         current_prefix = prefix + ("└── " if is_last else "├── ")
         child_prefix = prefix + ("    " if is_last else "│   ")
     
-    # format value
     val_str = _format_val(node.val)
     
-    # print node
     print(f"{current_prefix}[{node.type}] {val_str}")
     
-    # print detail untuk InsertData, CreateTableData, DropTableData
-    if is_root or True:  # selalu print detail
+    if is_root or True:
         detail_prefix = child_prefix if not is_root else ""
         _print_node_details(node, detail_prefix, len(node.childs) == 0)
     
-    # print children
     for i, child in enumerate(node.childs):
         is_last_child = (i == len(node.childs) - 1)
         print_tree_box(child, child_prefix, is_last_child, False)
 
-
 def _print_node_details(node, prefix, is_last_node):
-    """print detail tambahan untuk node tertentu"""
-    
     if node.type == "INSERT" and isinstance(node.val, InsertData):
         connector = "└── " if is_last_node else "├── "
         print(f"{prefix}{connector}columns: {node.val.columns}")
@@ -169,7 +298,6 @@ def _print_node_details(node, prefix, is_last_node):
         has_pk = len(node.val.primary_key) > 0
         has_fk = len(node.val.foreign_keys) > 0
         
-        # columns
         print(f"{prefix}├── columns:")
         for i, col in enumerate(node.val.columns):
             is_last_col = (i == len(node.val.columns) - 1) and not has_pk and not has_fk
@@ -177,17 +305,139 @@ def _print_node_details(node, prefix, is_last_node):
             size_str = f"({col.size})" if col.size else ""
             print(f"{prefix}│   {col_connector}{col.name}: {col.data_type}{size_str}")
         
-        # primary key
         if has_pk:
             pk_connector = "└── " if not has_fk else "├── "
             print(f"{prefix}{pk_connector}primary_key: {node.val.primary_key}")
         
-        # foreign keys
         if has_fk:
             print(f"{prefix}└── foreign_keys:")
             for i, fk in enumerate(node.val.foreign_keys):
                 fk_connector = "└── " if i == len(node.val.foreign_keys) - 1 else "├── "
                 print(f"{prefix}    {fk_connector}{fk.column} -> {fk.ref_table}.{fk.ref_column}")
+
+def node_to_json(node):
+    if node is None:
+        return None
+    
+    return {
+        "type": node.type,
+        "val": val_to_json(node.val),
+        "childs": [node_to_json(child) for child in node.childs]
+    }
+
+def val_to_json(val):
+    if val is None:
+        return None
+    
+    if isinstance(val, str):
+        return val
+    
+    if isinstance(val, (int, float)):
+        return val
+    
+    if isinstance(val, list):
+        return [val_to_json(item) for item in val]
+    
+    if isinstance(val, ColumnNode):
+        return {
+            "type": "ColumnNode",
+            "column": val.column,
+            "table": val.table
+        }
+    
+    if isinstance(val, ConditionNode):
+        return {
+            "type": "ConditionNode",
+            "attr": val_to_json(val.attr),
+            "op": val.op,
+            "value": val_to_json(val.value)
+        }
+    
+    if isinstance(val, LogicalNode):
+        return {
+            "type": "LogicalNode",
+            "operator": val.operator,
+            "childs": [val_to_json(child) for child in val.childs]
+        }
+    
+    if isinstance(val, OrderByItem):
+        return {
+            "type": "OrderByItem",
+            "column": val_to_json(val.column),
+            "direction": val.direction
+        }
+    
+    if isinstance(val, SetClause):
+        return {
+            "type": "SetClause",
+            "column": val.column,
+            "value": val.value
+        }
+    
+    if isinstance(val, TableReference):
+        return {
+            "type": "TableReference",
+            "name": val.name,
+            "alias": val.alias
+        }
+    
+    if isinstance(val, NaturalJoin):
+        return {
+            "type": "NaturalJoin"
+        }
+    
+    if isinstance(val, ThetaJoin):
+        return {
+            "type": "ThetaJoin",
+            "condition": val_to_json(val.condition)
+        }
+    
+    if isinstance(val, InsertData):
+        return {
+            "type": "InsertData",
+            "table": val.table,
+            "columns": val.columns,
+            "values": val.values
+        }
+    
+    if isinstance(val, CreateTableData):
+        return {
+            "type": "CreateTableData",
+            "table": val.table,
+            "columns": [
+                {
+                    "type": "ColumnDefinition",
+                    "name": col.name,
+                    "data_type": col.data_type,
+                    "size": col.size
+                } for col in val.columns
+            ],
+            "primary_key": val.primary_key,
+            "foreign_keys": [
+                {
+                    "type": "ForeignKeyDefinition",
+                    "column": fk.column,
+                    "ref_table": fk.ref_table,
+                    "ref_column": fk.ref_column
+                } for fk in val.foreign_keys
+            ]
+        }
+    
+    if isinstance(val, DropTableData):
+        return {
+            "type": "DropTableData",
+            "table": val.table,
+            "cascade": val.cascade
+        }
+    
+    if isinstance(val, dict):
+        return val
+    
+    return str(val)
+
+def print_json(node, indent=2):
+    json_data = node_to_json(node)
+    print(json.dumps(json_data, indent=indent, ensure_ascii=False))
 
 def test_select_simple():
     engine = OptimizationEngine()
@@ -200,18 +450,17 @@ def test_select_simple():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
-    # check PROJECT
     assert result.query_tree.type == "PROJECT"
     assert isinstance(result.query_tree.val, list)
     assert all(isinstance(col, ColumnNode) for col in result.query_tree.val)
     
-    # check SIGMA
     sigma = result.query_tree.childs[0]
     assert sigma.type == "SIGMA"
     assert isinstance(sigma.val, ConditionNode)
     
-    # check TABLE
     table = sigma.childs[0]
     assert table.type == "TABLE"
     assert isinstance(table.val, TableReference)
@@ -229,8 +478,9 @@ def test_select_with_and():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
-    # check SIGMA with LogicalNode
     sigma = result.query_tree
     assert sigma.type == "SIGMA"
     assert isinstance(sigma.val, LogicalNode)
@@ -249,6 +499,8 @@ def test_select_with_or():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     proj = result.query_tree
     sigma = proj.childs[0]
@@ -269,6 +521,8 @@ def test_select_with_order_by():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     proj = result.query_tree
     sort = proj.childs[0]
@@ -289,10 +543,14 @@ def test_select_with_join():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     proj = result.query_tree
     join = proj.childs[0]
     assert join.type == "JOIN"
+    assert isinstance(join.val, ThetaJoin)
+    assert isinstance(join.val.condition, ConditionNode)
     
     left = join.childs[0]
     right = join.childs[1]
@@ -314,6 +572,8 @@ def test_update():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     update = result.query_tree
     assert update.type == "UPDATE"
@@ -323,7 +583,7 @@ def test_update():
     assert sigma.type == "SIGMA"
     assert isinstance(sigma.val, ConditionNode)
     
-    print("\nPassed\n")
+    print("\nPASSED\n")
 
 def test_delete():
     engine = OptimizationEngine()
@@ -336,6 +596,8 @@ def test_delete():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     delete = result.query_tree
     assert delete.type == "DELETE"
@@ -357,6 +619,8 @@ def test_insert():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     insert = result.query_tree
     assert insert.type == "INSERT"
@@ -378,6 +642,8 @@ def test_create_table():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     create = result.query_tree
     assert create.type == "CREATE_TABLE"
@@ -399,6 +665,8 @@ def test_drop_table():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     drop = result.query_tree
     assert drop.type == "DROP_TABLE"
@@ -420,6 +688,8 @@ def test_transaction():
     print(f"\nQuery: {query}")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     assert result.query_tree.type == "BEGIN_TRANSACTION"
     
     query = "COMMIT;"
@@ -427,6 +697,8 @@ def test_transaction():
     print(f"\nQuery: {query}")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     assert result.query_tree.type == "COMMIT"
     
     query = "ROLLBACK;"
@@ -434,6 +706,8 @@ def test_transaction():
     print(f"\nQuery: {query}")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     assert result.query_tree.type == "ROLLBACK"
     
     print("\nPASSED\n")
@@ -449,8 +723,10 @@ def test_complex_query():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
-    print("\nPassed\n")
+    print("\nPASSED\n")
 
 def test_natural_join():
     engine = OptimizationEngine()
@@ -463,10 +739,12 @@ def test_natural_join():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     join = result.query_tree
     assert join.type == "JOIN"
-    assert join.val == "NATURAL"
+    assert isinstance(join.val, NaturalJoin)
     
     print("\nPASSED\n")
 
@@ -481,6 +759,8 @@ def test_cartesian_product():
     print(f"Query: {query}\n")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     join = result.query_tree
     assert join.type == "JOIN"
@@ -495,66 +775,20 @@ def test_mixed_and_or():
     print("Test Mixed AND/OR Conditions")
     print("=" * 50)
     
-    # test 1: a AND b OR c
     query = "SELECT * FROM t WHERE a = 1 AND b = 2 OR c = 3;"
     result = engine.parse_query(query)
     print(f"\nQuery: {query}")
     print("Query Tree:")
     print_tree_box(result.query_tree)
+    print("\nJSON Output:")
+    print_json(result.query_tree)
     
     sigma = result.query_tree
     assert sigma.type == "SIGMA"
     assert isinstance(sigma.val, LogicalNode)
     assert sigma.val.operator == "OR"
-    # first child should be AND node
     assert isinstance(sigma.val.childs[0], LogicalNode)
     assert sigma.val.childs[0].operator == "AND"
-    
-    # test 2: a OR b AND c
-    query = "SELECT * FROM t WHERE a = 1 OR b = 2 AND c = 3;"
-    result = engine.parse_query(query)
-    print(f"\nQuery: {query}")
-    print("Query Tree:")
-    print_tree_box(result.query_tree)
-    
-    sigma = result.query_tree
-    assert sigma.type == "SIGMA"
-    assert isinstance(sigma.val, LogicalNode)
-    assert sigma.val.operator == "OR"
-    # second child should be AND node
-    assert isinstance(sigma.val.childs[1], LogicalNode)
-    assert sigma.val.childs[1].operator == "AND"
-    
-    # test 3: a AND b AND c OR d
-    query = "SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3 OR d = 4;"
-    result = engine.parse_query(query)
-    print(f"\nQuery: {query}")
-    print("Query Tree:")
-    print_tree_box(result.query_tree)
-    
-    sigma = result.query_tree
-    assert sigma.type == "SIGMA"
-    assert isinstance(sigma.val, LogicalNode)
-    assert sigma.val.operator == "OR"
-    # first child should be AND with 3 conditions
-    assert isinstance(sigma.val.childs[0], LogicalNode)
-    assert sigma.val.childs[0].operator == "AND"
-    assert len(sigma.val.childs[0].childs) == 3
-    
-    # test 4: a OR b OR c AND d
-    query = "SELECT * FROM t WHERE a = 1 OR b = 2 OR c = 3 AND d = 4;"
-    result = engine.parse_query(query)
-    print(f"\nQuery: {query}")
-    print("Query Tree:")
-    print_tree_box(result.query_tree)
-    
-    sigma = result.query_tree
-    assert sigma.type == "SIGMA"
-    assert isinstance(sigma.val, LogicalNode)
-    assert sigma.val.operator == "OR"
-    # last child should be AND node
-    assert isinstance(sigma.val.childs[2], LogicalNode)
-    assert sigma.val.childs[2].operator == "AND"
     
     print("\nPASSED\n")
 

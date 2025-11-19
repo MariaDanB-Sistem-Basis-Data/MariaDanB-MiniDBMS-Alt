@@ -119,6 +119,24 @@ class DropTableData:
         return f"{self.table} {mode}"
 
 
+# natural join - represents NATURAL JOIN
+class NaturalJoin:
+    def __init__(self):
+        pass
+    
+    def __repr__(self):
+        return "NATURAL"
+
+
+# theta join - represents JOIN with condition
+class ThetaJoin:
+    def __init__(self, condition):
+        self.condition = condition  # ConditionNode atau LogicalNode
+    
+    def __repr__(self):
+        return f"THETA: {self.condition}"
+
+
 # table reference - represents a table with optional alias
 class TableReference:
     def __init__(self, name, alias=None):

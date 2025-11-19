@@ -7,22 +7,46 @@ from model.query_tree import (
     SetClause,
     ColumnDefinition,
     ForeignKeyDefinition,
-    TableReference
+    TableReference,
+    NaturalJoin,
+    ThetaJoin
 )
 import re
 
 # util kecil
 def _is_cartesian(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and (join_node.val == "" or join_node.val.upper() == "CARTESIAN")
+    if join_node.type != "JOIN":
+        return False
+    if join_node.val is None or join_node.val == "":
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper() == "CARTESIAN":
+        return True
+    return False
 
 def _is_theta(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and isinstance(join_node.val, str) and join_node.val.upper().startswith("THETA:")
+    if join_node.type != "JOIN":
+        return False
+    if isinstance(join_node.val, ThetaJoin):
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper().startswith("THETA:"):
+        return True
+    return False
 
 def _is_natural(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and join_node.val.upper() == "NATURAL"
+    if join_node.type != "JOIN":
+        return False
+    if isinstance(join_node.val, NaturalJoin):
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper() == "NATURAL":
+        return True
+    return False
 
 def _theta_pred(join_node: QueryTree) -> str:
-    if not _is_theta(join_node): return ""
+    if not _is_theta(join_node):
+        return ""
+    if isinstance(join_node.val, ThetaJoin):
+        # return string representation of condition
+        return str(join_node.val.condition)
     return join_node.val.split(":", 1)[1].strip()
 
 def _mk_theta(pred: str) -> str:
@@ -809,7 +833,7 @@ def _parse_from_clause(query: str) -> QueryTree:
         for right_table_str in join_split[1:]:
             right_table = _parse_table_with_alias(right_table_str.strip())
             
-            join_node = QueryTree(type="JOIN", val="NATURAL")
+            join_node = QueryTree(type="JOIN", val=NaturalJoin())
             join_node.add_child(left_table)
             join_node.add_child(right_table)
             left_table = join_node
@@ -834,7 +858,7 @@ def _parse_from_clause(query: str) -> QueryTree:
             # parse join condition to ConditionNode
             join_cond = _parse_single_condition(join_condition_str)
             
-            join_node = QueryTree(type="JOIN", val=f"THETA:{join_condition_str}")
+            join_node = QueryTree(type="JOIN", val=ThetaJoin(join_cond))
             join_node.add_child(left_table)
             join_node.add_child(right_table)
             left_table = join_node
