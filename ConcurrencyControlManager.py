@@ -7,6 +7,7 @@ from ccm_model.Enums import Action, TransactionStatus
 from ccm_model.DeadlockDetector import DeadlockDetector
 from ccm_model.LockManager import LockManager
 from ccm_model.TransactionManager import TransactionManager
+from ConcurrencyMethod import ConcurrencyMethod
 # sementara
 class Row:
     def __init__(self, name: str):
@@ -15,10 +16,11 @@ class Row:
 class ConcurrencyControlManager:
     def __init__(self):
         self.transaction_manager = TransactionManager()
-        self.lock_table: dict[int, Transaction] = {}
-        self.deadlock_detector: DeadlockDetector = DeadlockDetector()
-        self.lock_manager: LockManager = LockManager()
-        self._next_tid = 1
+        self.concurrency_method = ConcurrencyMethod()  
+        
+    def set_method(self, method: ConcurrencyMethod):
+        """Ganti algoritma concurrency control secara dinamis."""
+        self.concurrency_method = method
 
     def begin_transaction(self) -> int:
         """Memulai transaksi baru dan mengembalikan transaction_id."""
