@@ -1,5 +1,6 @@
 from typing import Generic, TypeVar, Dict, Optional, List
 from datetime import datetime
+from collections import OrderedDict
 
 T = TypeVar('T')
 
@@ -27,79 +28,103 @@ class BufferEntry(Generic[T]):
         return self._pinCount
 
     def markDirty(self) -> None:
-        #TODO: Mark entry as modified (needs to be written to disk)
-        pass
+        self._isDirty = True
 
     def markClean(self) -> None:
-        #TODO: Mark entry as synchronized with disk
-        pass
+        self._isDirty = False
 
     def pin(self) -> None:
-        #TODO: Increment pin count (prevent eviction while in use)
-        pass
+        self._pinCount += 1
 
     def unpin(self) -> None:
-        #TODO: Decrement pin count
-        pass
+        if self._pinCount > 0:
+            self._pinCount -= 1
 
     def updateAccessTime(self) -> None:
-        #TODO: Update last accessed timestamp
-        pass
+        self._lastAccessed = datetime.now()
 
 
 class Buffer(Generic[T]):
     def __init__(self, maxSize: int = 100):
         self._maxSize = maxSize
         self._bufferPool: Dict[str, BufferEntry[T]] = {}
-        self._accessOrder: List[str] = []  # For LRU eviction
+        self._accessOrder: OrderedDict[str, None] = OrderedDict()
 
     def get(self, key: str) -> Optional[T]:
-        #TODO: Retrieve data from buffer if exists, update access order
-        pass
+        if key not in self._bufferPool:
+            return None
+        
+        entry = self._bufferPool[key]
+        entry.updateAccessTime()
+        self._accessOrder.move_to_end(key)
+        
+        return entry.getData()
 
     def put(self, key: str, data: T, isDirty: bool = False) -> None:
-        #TODO: Add or update data in buffer, evict if necessary
-        pass
+        if key in self._bufferPool:
+            self._bufferPool[key]._data = data
+
+            if isDirty:
+                self._bufferPool[key].markDirty()
+            self._bufferPool[key].updateAccessTime()
+
+            if key in self._accessOrder:
+                self._accessOrder.move_to_end(key)
+            return
+
+        if self.isFull():
+            self.evictEntry()
+        entry = BufferEntry(key, data, isDirty)
+        self._bufferPool[key] = entry
+        self._accessOrder[key] = None
 
     def remove(self, key: str) -> None:
-        #TODO: Remove entry from buffer
-        pass
+        if key in self._bufferPool:
+            del self._bufferPool[key]
+        if key in self._accessOrder:
+            del self._accessOrder[key]
 
     def isFull(self) -> bool:
-        #TODO: Check if buffer is at capacity
-        pass
+        return len(self._bufferPool) >= self._maxSize
 
     def isNearlyFull(self, threshold: float = 0.9) -> bool:
-        #TODO: Check if buffer is near capacity (threshold percentage)
-        pass
+        return len(self._bufferPool) >= self._maxSize * threshold
 
     def getDirtyEntries(self) -> List[BufferEntry[T]]:
-        #TODO: Retrieve all dirty (modified) entries for flushing
-        pass
+        return [entry for entry in self._bufferPool.values() if entry.isDirty()]
 
     def flushDirtyEntries(self) -> List[BufferEntry[T]]:
-        #TODO: Get dirty entries and mark them for writing to disk
-        pass
+        dirty_entries = self.getDirtyEntries()
+        for entry in dirty_entries:
+            entry.markClean()
+        return dirty_entries
 
     def evictEntry(self) -> Optional[str]:
-        #TODO: Evict least recently used unpinned entry (LRU policy)
-        pass
+        for key in self._accessOrder:
+            entry = self._bufferPool[key]
+            if entry.getPinCount() == 0:
+                self.remove(key)
+                return key
+        return None
 
     def clear(self) -> None:
-        #TODO: Clear all entries from buffer (use after checkpoint)
-        pass
+        self._bufferPool.clear()
+        self._accessOrder.clear()
 
     def getSize(self) -> int:
-        #TODO: Return current buffer size
-        pass
+        return len(self._bufferPool)
 
     def getMaxSize(self) -> int:
         return self._maxSize
 
     def pinEntry(self, key: str) -> bool:
-        #TODO: Pin entry to prevent eviction
-        pass
+        if key in self._bufferPool:
+            self._bufferPool[key].pin()
+            return True
+        return False
 
     def unpinEntry(self, key: str) -> bool:
-        #TODO: Unpin entry to allow eviction
-        pass
+        if key in self._bufferPool:
+            self._bufferPool[key].unpin()
+            return True
+        return False
