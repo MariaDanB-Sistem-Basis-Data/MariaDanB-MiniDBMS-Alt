@@ -7,7 +7,7 @@ File ini tabel-tabelnya masih pakai dummy, jalankan python tests/UnitTestingCost
 - V(A,r): number of distinct values for attribute A in relation r
 """
 
-from model.query_tree import QueryTree
+from model.query_tree import QueryTree, ConditionNode, LogicalNode, ColumnNode
 from model.parsed_query import ParsedQuery
 import math
 
@@ -24,7 +24,7 @@ class CostPlanner:
         # Key: identifier string, Value: dict dengan n_r, b_r, f_r, v_a_r
         self.temp_table_stats = {}
         
-    # =================== HELPER FUNCTIONS UNTUK MENDAPATKAN STATISTIK ===================
+    # =================== HELPER FUNCTIONS STATISTIK ===================
     
     def get_table_stats(self, table_name: str) -> dict:
         """
@@ -168,6 +168,10 @@ class CostPlanner:
             'v_a_r': {}
         }
         
+        # Handle TableReference object - extract name
+        if hasattr(table_name, 'name'):
+            table_name = table_name.name
+        
         return dummy_stats.get(table_name.lower(), default_stats)
         # ==================== [AKHIR BAGIAN HAPUS] ====================
     
@@ -183,179 +187,174 @@ class CostPlanner:
             'v_a_r': v_a_r
         }
     
-    def estimate_selectivity(self, condition: str, v_a_r: dict = None) -> float:
+    # ======================= HELPER FUNCTIONS - DISPLAY/FORMATTING =======================
+    
+    def _calculate_logical_node_selectivity(self, logical_node: LogicalNode, v_a_r: dict) -> float:
+        """
+        Recursively calculate selectivity for a LogicalNode.
+        Handles nested AND/OR correctly.
+        
+        Args:
+            logical_node: LogicalNode to calculate selectivity for
+            v_a_r: Dictionary {attribute: distinct_count}
+        
+        Returns:
+            float: Combined selectivity
+        """
+        if logical_node.operator == "AND":
+            # Conjunction: multiply selectivities
+            result = 1.0
+            for child in logical_node.childs:
+                if isinstance(child, LogicalNode):
+                    child_selectivity = self._calculate_logical_node_selectivity(child, v_a_r)
+                    result *= child_selectivity
+                elif isinstance(child, ConditionNode):
+                    child_selectivity = self.estimate_selectivity(child, v_a_r)
+                    result *= child_selectivity
+            return result
+        
+        elif logical_node.operator == "OR":
+            # Disjunction: 1 - (1-s1)*(1-s2)*...
+            product = 1.0
+            for child in logical_node.childs:
+                if isinstance(child, LogicalNode):
+                    child_selectivity = self._calculate_logical_node_selectivity(child, v_a_r)
+                    product *= (1.0 - child_selectivity)
+                elif isinstance(child, ConditionNode):
+                    child_selectivity = self.estimate_selectivity(child, v_a_r)
+                    product *= (1.0 - child_selectivity)
+            return 1.0 - product
+        
+        else:
+            # Unknown operator
+            return 0.5
+    
+    def _logical_node_to_string(self, logical_node: LogicalNode) -> str:
+        """
+        Convert LogicalNode to string representation (for display).
+        Handles nested structure.
+        
+        Args:
+            logical_node: LogicalNode to convert
+        
+        Returns:
+            str: String representation
+        """
+        parts = []
+        for child in logical_node.childs:
+            if isinstance(child, LogicalNode):
+                parts.append(f"({self._logical_node_to_string(child)})")
+            elif isinstance(child, ConditionNode):
+                parts.append(self._condition_node_to_string(child))
+        
+        operator = f" {logical_node.operator} "
+        return operator.join(parts)
+    
+    def _condition_node_to_string(self, cond_node: ConditionNode) -> str:
+        """
+        Convert ConditionNode ke string representation untuk display.
+        
+        Args:
+            cond_node: ConditionNode untuk dikonversi
+        
+        Returns:
+            str: String representation (e.g., 'age > 18', 'gpa = 3.5')
+        
+        Called by:
+            - cost_selection() untuk display output
+        """
+        # Extract attribute
+        if isinstance(cond_node.attr, ColumnNode):
+            attr_str = f"{cond_node.attr.table}.{cond_node.attr.column}" if cond_node.attr.table else cond_node.attr.column
+        else:
+            attr_str = str(cond_node.attr)
+        
+        # Extract value
+        if isinstance(cond_node.value, ColumnNode):
+            # Handle parser bug: decimal jadi ColumnNode(column='5', table='3') untuk 3.5
+            if cond_node.value.table and cond_node.value.table.isdigit():
+                value_str = f"{cond_node.value.table}.{cond_node.value.column}"
+            else:
+                value_str = f"{cond_node.value.table}.{cond_node.value.column}" if cond_node.value.table else cond_node.value.column
+        else:
+            value_str = str(cond_node.value)
+        
+        return f"{attr_str} {cond_node.op} {value_str}"
+    
+    # ======================= SELECTIVITY ESTIMATION =======================
+    
+    def estimate_selectivity(self, condition: ConditionNode, v_a_r: dict = None) -> float:
         """
         Estimasi selectivity dari kondisi selection menggunakan V(A,r).
-        Return: nilai antara 0.0 - 1.0
         
         Rumus dari slide "Size Estimation of Complex Selections":
         - Equality (A = value): σ_A=v(r) → selectivity = 1/V(A,r)
         - Inequality (A ≠ value): selectivity = 1 - (1/V(A,r))
         - Comparison (A > value): selectivity ≈ 0.5 (tanpa histogram)
-        - LIKE, IN: heuristic estimates
         
         Args:
-            condition: String kondisi (e.g., 'age > 18', 'name = "John"')
+            condition: ConditionNode dengan attr (ColumnNode), op (str), value
             v_a_r: Dictionary {attribute: distinct_count} dari tabel
+        
+        Returns:
+            float: selectivity (0.0 - 1.0)
+        
+        Called by:
+            - _calculate_logical_node_selectivity()
         """
         if v_a_r is None:
             v_a_r = {}
         
-        condition_upper = condition.upper()
+        # Get attribute name dari ConditionNode.attr (ColumnNode)
+        if isinstance(condition.attr, ColumnNode):
+            attribute = condition.attr.column
+        else:
+            # Fallback jika attr bukan ColumnNode
+            attribute = None
         
-        # Parse attribute name dari condition
-        # Format: "attribute operator value" atau "table.attribute operator value"
-        attribute = self._extract_attribute_from_condition(condition)
+        op = condition.op
         
         # Equality condition: σ_A=v(r)
         # Formula: selectivity = 1 / V(A,r)
-        if "=" in condition and "!=" not in condition and "<>" not in condition:
+        if op == "=":
             if attribute and attribute in v_a_r:
                 v_a = v_a_r[attribute]
                 return 1.0 / v_a if v_a > 0 else 0.1
-            else:
-                # Fallback: asumsi equality sangat selective
-                return 0.1
+            return 0.1
         
         # Inequality: σ_A≠v(r)
-        # Formula: selectivity = 1 - (1 / V(A,r))
-        elif "!=" in condition or "<>" in condition:
+        elif op in ["!=", "<>"]:
             if attribute and attribute in v_a_r:
                 v_a = v_a_r[attribute]
                 return 1.0 - (1.0 / v_a) if v_a > 0 else 0.9
-            else:
-                # Fallback: hampir semua tuple
-                return 0.9
+            return 0.9
         
-        # Comparison: σ_A>v(r) atau σ_A<v(r)
+        # Comparison operators: >, <, >=, <=
         # Formula ideal: (max - v) / (max - min)
         # Tanpa histogram: asumsi distribusi uniform → 0.5
-        elif ">" in condition or "<" in condition or ">=" in condition or "<=" in condition:
-            # TODO: Gunakan histogram jika tersedia
+        elif op in [">", "<", ">=", "<="]:
             return 0.5
         
         # Pattern matching: LIKE
-        # Heuristic: tergantung pattern complexity / pure heuristic
-        elif "LIKE" in condition_upper:
-            return 0.2 
+        elif op.upper() == "LIKE":
+            return 0.2
         
         # IN clause: σ_A IN (v1,v2,...,vn)(r)
         # Formula: selectivity = n / V(A,r)
-        elif "IN" in condition_upper:
+        # TODO: Harus detect actual number of values dari condition.value
+        # TODO: Gimana kalau IN nya juga bukan dari value distinct tabel, tapi literal?
+        elif op.upper() == "IN":
             if attribute and attribute in v_a_r:
-                # Count jumlah values dalam IN clause
                 # Simple heuristic: asumsi 5 values
                 num_values = 5
                 v_a = v_a_r[attribute]
                 return min(1.0, num_values / v_a) if v_a > 0 else 0.15
-            else:
-                return 0.15
+            return 0.15
         
         # Default: konservatif
-        else:
-            return 0.5
+        return 0.5
     
-    def _extract_attribute_from_condition(self, condition: str) -> str:
-        """
-        Extract attribute name dari condition string.
-        Examples:
-            'age > 18' → 'age'
-            'students.age > 18' → 'age'
-            'name = "John"' → 'name'
-        """
-        import re
-        
-        # Patterns untuk operator
-        operators = ['>=', '<=', '<>', '!=', '=', '>', '<', 'LIKE', 'IN']
-        
-        for op in operators:
-            if op in condition.upper():
-                # Split by operator
-                parts = re.split(f'\\s*{re.escape(op)}\\s*', condition, flags=re.IGNORECASE)
-                if parts:
-                    attr = parts[0].strip()
-                    # Handle table.attribute format
-                    if '.' in attr:
-                        attr = attr.split('.')[-1].strip()
-                    return attr
-        
-        return ""
-    
-    def estimate_conjunction_selectivity(self, conditions: list, v_a_r: dict = None) -> float:
-        """
-        Estimasi selectivity untuk CONJUNCTION (AND).
-        
-        Rumus dari slide: σ_θ1∧θ2∧...∧θn(r)
-        Assuming independence: s_1 * s_2 * ... * s_n
-        
-        Formula: n_r * (s_1 * s_2 * ... * s_n) / n_r^n
-        Simplified: s_1 * s_2 * ... * s_n
-        
-        Args:
-            conditions: List of condition strings
-            v_a_r: Dictionary {attribute: distinct_count}
-        
-        Returns:
-            Combined selectivity (product of individual selectivities)
-        """
-        if not conditions:
-            return 1.0
-        
-        # Asumsi independence: kalikan semua selectivity
-        result = 1.0
-        for cond in conditions:
-            s_i = self.estimate_selectivity(cond, v_a_r)
-            result *= s_i
-        
-        return result
-    
-    def estimate_disjunction_selectivity(self, conditions: list, v_a_r: dict = None) -> float:
-        """
-        Estimasi selectivity untuk DISJUNCTION (OR).
-        
-        Rumus dari slide: σ_θ1∨θ2∨...∨θn(r)
-        Formula: n_r * (1 - (1 - s_1) * (1 - s_2) * ... * (1 - s_n))
-        
-        Explanation:
-        - P(A OR B) = P(A) + P(B) - P(A AND B)
-        - For multiple: 1 - P(not A AND not B AND not C)
-        - = 1 - (1-s_1)*(1-s_2)*(1-s_3)
-        
-        Args:
-            conditions: List of condition strings
-            v_a_r: Dictionary {attribute: distinct_count}
-        
-        Returns:
-            Combined selectivity for disjunction
-        """
-        if not conditions:
-            return 1.0
-        
-        # Formula: 1 - (1-s_1)*(1-s_2)*...*(1-s_n)
-        product = 1.0
-        for cond in conditions:
-            s_i = self.estimate_selectivity(cond, v_a_r)
-            product *= (1.0 - s_i)
-        
-        return 1.0 - product
-    
-    def estimate_negation_selectivity(self, condition: str, v_a_r: dict = None) -> float:
-        """
-        Estimasi selectivity untuk NEGATION (NOT).
-        
-        Rumus dari slide: σ_¬θ(r)
-        Formula: n_r - size(σ_θ(r))
-        Selectivity: 1 - s_θ
-        
-        Args:
-            condition: Condition string
-            v_a_r: Dictionary {attribute: distinct_count}
-        
-        Returns:
-            Negation selectivity
-        """
-        s = self.estimate_selectivity(condition, v_a_r)
-        return 1.0 - s
+
     
     # ================================================ COST FUNCTIONS ================================================
     
@@ -370,15 +369,18 @@ class CostPlanner:
         table_name = node.val
         stats = self.get_table_stats(table_name)
         
+        # Extract display name from TableReference if needed
+        display_name = table_name.name if hasattr(table_name, 'name') else table_name
+        
         return {
             "operation": "TABLE_SCAN",
-            "table": table_name,
+            "table": display_name,
             "cost": stats['b_r'],
             "n_r": stats['n_r'],
             "b_r": stats['b_r'],
             "f_r": stats['f_r'],
             "v_a_r": stats['v_a_r'],
-            "description": f"Full scan of table {table_name}"
+            "description": f"Full scan of table {display_name}"
         }
     
     def cost_selection(self, node: QueryTree, input_cost: dict) -> dict:
@@ -394,7 +396,20 @@ class CostPlanner:
         Output tuples: n_r * selectivity
         Output blocks: ceil(output_tuples / f_r)
         
-        TODO: Implementasi index scan jika ada index
+        NEW: Support LogicalNode (AND/OR) dan ConditionNode
+        
+        Args:
+            node: QueryTree dengan type="SIGMA"
+            node.val: dapat berupa LogicalNode, ConditionNode, atau string (backward compat)
+            input_cost: Cost info dari child node
+        
+        Returns:
+            dict: Cost breakdown dengan n_r, b_r, v_a_r, selectivity
+        
+        Called by:
+            - calculate_cost()
+        
+        TODO: Implementasi index scan jika ada index (kalau SM ada info ketinggian Tree)
         - Dengan B+-tree index: cost = h_i + (selectivity * b_r)
         - h_i = tinggi tree
         """
@@ -405,8 +420,20 @@ class CostPlanner:
         input_f_r = input_cost.get("f_r", 10)
         input_v_a_r = input_cost.get("v_a_r", {})
         
-        # Hitung selectivity DENGAN V(A,r)
-        selectivity = self.estimate_selectivity(condition, input_v_a_r)
+        # Calculate selectivity based on condition type
+        if isinstance(condition, LogicalNode):
+            # LogicalNode: Use recursive helper for AND/OR (handles nesting)
+            selectivity = self._calculate_logical_node_selectivity(condition, input_v_a_r)
+            condition_str = self._logical_node_to_string(condition)
+        
+        elif isinstance(condition, ConditionNode):
+            # Single ConditionNode
+            selectivity = self.estimate_selectivity(condition, input_v_a_r)
+            condition_str = self._condition_node_to_string(condition)
+        
+        else:
+            # Unknown format - should not happen with current parser
+            raise ValueError(f"Unexpected condition type: {type(condition)}. Expected LogicalNode or ConditionNode.")
         
         # Estimasi output size
         # Formula: n_r(σ) = n_r(input) * selectivity
@@ -439,14 +466,14 @@ class CostPlanner:
         
         return {
             "operation": "SELECTION",
-            "condition": condition,
+            "condition": condition_str,
             "cost": total_cost,
             "n_r": output_n_r,
             "b_r": output_b_r,
             "f_r": input_f_r,
             "v_a_r": output_v_a_r,
             "selectivity": selectivity,
-            "description": f"Filter: {condition} (selectivity={selectivity:.2f})"
+            "description": f"Filter: {condition_str} (selectivity={selectivity:.2f})"
         }
     
     def cost_projection(self, node: QueryTree, input_cost: dict) -> dict:
@@ -501,7 +528,7 @@ class CostPlanner:
         - Untuk setiap tuple di R, scan S: n_r(R) * b_r(S)
         
         === ESTIMATION OF JOIN SIZE ===
-        Dari slide "Estimation of the Size of Joins":
+        Rumus dari slide "Estimation of the Size of Joins":
         
         Case 1: R ∩ S = ∅ (no common attributes)
         - Cartesian product: n_r(R ⋈ S) = n_r(R) * n_r(S)
@@ -523,6 +550,7 @@ class CostPlanner:
         - If A contains attributes from both R and S:
           V(A, R⋈S) = min(V(A1,R)*V(A2-A1,S), V(A1-A2,R)*V(A2,S), n_r(R⋈S))
         
+          
         TODO: Implementasi Hash Join dan Sort-Merge Join
         - Hash Join: 3 * (b_r(R) + b_r(S))
         - Sort-Merge Join: b_r(R) + b_r(S) + sort_cost
@@ -628,7 +656,9 @@ class CostPlanner:
         input_b_r = input_cost.get("b_r", 100)
         input_n_r = input_cost.get("n_r", 1000)
         
-        # Asumsi: memory dapat hold 100 blocks
+        # TODO: Asumsi memory buffer size dari Storage Manager
+        # Seharusnya didapat dari storage_manager.get_buffer_pool_size() atau config
+        # Asumsi sementara: memory dapat hold 100 blocks
         M = 100
         
         if input_b_r <= M:
@@ -663,7 +693,14 @@ class CostPlanner:
         Jika LIMIT sangat kecil, bisa early termination.
         Cost reduction: cost * (limit / n_r)
         """
-        limit_val = int(node.val) if node.val.isdigit() else 100
+        # Handle different types for limit value
+        if isinstance(node.val, int):
+            limit_val = node.val
+        elif isinstance(node.val, str) and node.val.isdigit():
+            limit_val = int(node.val)
+        else:
+            limit_val = 100  # default
+            
         input_n_r = input_cost.get("n_r", 1000)
         
         # Output limited to min(limit, n_r)
@@ -689,100 +726,6 @@ class CostPlanner:
             "f_r": input_cost.get("f_r", 10),
             "v_a_r": input_cost.get("v_a_r", {}),
             "description": f"Limit to {limit_val} records"
-        }
-    
-    def cost_or(self, node: QueryTree) -> dict:
-        """
-        Cost untuk operasi OR (DISJUNCTION).
-        
-        Struktur tree untuk OR:
-        OR (root)
-        ├── SIGMA: condition1
-        │   └── TABLE
-        ├── SIGMA: condition2
-        │   └── TABLE
-        └── SIGMA: condition3
-            └── TABLE
-        
-        Strategy:
-        1. Collect semua conditions dari SIGMA children
-        2. Gunakan formula disjunction untuk size estimation
-        3. Cost = scan table sekali + apply combined OR predicate
-        
-        Formula dari slide:
-        - Disjunction: n_r * (1 - ∏(1 - s_i))
-        - Cost: b_r (optimized: hanya 1x table scan)
-        
-        V(A,r) untuk output: V(A,r) * combined_selectivity
-        """
-        if not node.childs:
-            return {"cost": 0, "n_r": 0, "b_r": 0, "f_r": 10, "v_a_r": {}}
-        
-        # Collect all conditions from SIGMA children
-        conditions = []
-        base_table_cost = None
-        base_v_a_r = {}
-        base_n_r = 0
-        
-        for child in node.childs:
-            if child.type == "SIGMA" and child.childs:
-                conditions.append(child.val)
-                # Get base table stats (semua branch pake table yang sama)
-                if base_table_cost is None:
-                    grandchild = child.childs[0]
-                    if grandchild.type == "TABLE":
-                        base_table_cost = self.cost_table_scan(grandchild)
-                        base_v_a_r = base_table_cost.get("v_a_r", {})
-                        base_n_r = base_table_cost.get("n_r", 1000)
-        
-        if not conditions or base_table_cost is None:
-            # Fallback: hitung children separately
-            child_costs = [self.calculate_cost(c) for c in node.childs]
-            total_cost = sum(c.get("cost", 0) for c in child_costs)
-            total_n_r = max(c.get("n_r", 0) for c in child_costs)
-            return {
-                "operation": "OR",
-                "cost": total_cost,
-                "n_r": total_n_r,
-                "b_r": base_table_cost.get("b_r", 100) if base_table_cost else 100,
-                "f_r": base_table_cost.get("f_r", 10) if base_table_cost else 10,
-                "v_a_r": base_v_a_r,
-                "description": f"OR with {len(node.childs)} branches"
-            }
-        
-        # Gunakan formula disjunction untuk size estimation
-        # Formula: n_r * (1 - (1-s_1)*(1-s_2)*...*(1-s_n))
-        combined_selectivity = self.estimate_disjunction_selectivity(conditions, base_v_a_r)
-        output_n_r = max(1, int(base_n_r * combined_selectivity))
-        
-        # Cost: scan table + apply combined predicate
-        # Optimized: hanya perlu 1x scan dengan combined OR predicate
-        total_cost = base_table_cost.get("cost", 0)
-        
-        # Output blocks
-        output_f_r = base_table_cost.get("f_r", 10)
-        output_b_r = max(1, math.ceil(output_n_r / output_f_r)) if output_f_r > 0 else base_table_cost.get("b_r", 100)
-        
-        # V(A,r) untuk output
-        # Formula: V(A, σ_θ1∨θ2(r)) ≈ V(A,r) * combined_selectivity
-        output_v_a_r = {}
-        for attr, v_val in base_v_a_r.items():
-            output_v_a_r[attr] = max(1, int(v_val * combined_selectivity))
-        
-        # Store temp stats
-        temp_id = f"or_{id(node)}"
-        self.store_temp_stats(temp_id, output_n_r, output_b_r, output_f_r, output_v_a_r)
-        
-        return {
-            "operation": "OR",
-            "conditions": conditions,
-            "cost": total_cost,
-            "n_r": output_n_r,
-            "b_r": output_b_r,
-            "f_r": output_f_r,
-            "v_a_r": output_v_a_r,
-            "selectivity": combined_selectivity,
-            "description": f"OR with {len(conditions)} conditions (selectivity={combined_selectivity:.2f})"
         }
     
     def cost_aggregation(self, node: QueryTree, input_cost: dict) -> dict:
@@ -846,20 +789,27 @@ class CostPlanner:
         """
         Recursively calculate cost untuk query tree.
         Bottom-up approach: calculate children first, then parent.
+        
+        Args:
+            node: QueryTree node untuk dihitung costnya
+        
+        Returns:
+            dict: Cost breakdown dengan keys: operation, cost, n_r, b_r, f_r, v_a_r, description
+        
+        Called by:
+            - get_cost()
+            - plan_query()
         """
         if node.type == "TABLE":
             return self.cost_table_scan(node)
         
         elif node.type == "SIGMA" or node.type == "SELECT":
             # Selection operation
+            # NOTE: Sekarang support LogicalNode (AND/OR) dan ConditionNode
             if not node.childs:
                 return {"cost": 0, "n_r": 0, "b_r": 0, "f_r": 1, "v_a_r": {}}
             child_cost = self.calculate_cost(node.childs[0])
             return self.cost_selection(node, child_cost)
-        
-        elif node.type == "OR":
-            # OR operation (disjunction)
-            return self.cost_or(node)
         
         elif node.type == "PROJECT":
             # Projection operation
@@ -980,49 +930,6 @@ class CostPlanner:
         print(f"{prefix}Cost: {details.get('cost', 0):.2f}")
         print(f"{prefix}Description: {details.get('description', 'N/A')}")
         print()
-    
-    # ======================= HELPER FUNCTIONS (for backward compatibility) =======================
-    
-    def get_blocking_factor(self, table_name: str) -> int:
-        """
-        Get blocking factor f_r untuk tabel.
-        f_r = number of records per block
-        
-        Args:
-            table_name: nama tabel
-            
-        Returns:
-            int: blocking factor (records per block)
-        """
-        stats = self.get_table_stats(table_name)
-        return stats.get('f_r', 10)
-    
-    def get_total_blocks(self, table_name: str) -> int:
-        """
-        Get total blocks b_r untuk tabel.
-        b_r = number of blocks
-        
-        Args:
-            table_name: nama tabel
-            
-        Returns:
-            int: total blocks
-        """
-        stats = self.get_table_stats(table_name)
-        return stats.get('b_r', 100)
-    
-    def get_total_records(self, table_name: str) -> int:
-        """
-        Get total records n_r untuk tabel.
-        n_r = number of tuples/records
-        
-        Args:
-            table_name: nama tabel
-            
-        Returns:
-            int: total records
-        """
-        stats = self.get_table_stats(table_name)
-        return stats.get('n_r', 1000)
+
 
 

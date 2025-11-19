@@ -7,8 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from model.query_tree import QueryTree
-from model.parsed_query import ParsedQuery
+from QueryOptimizer import OptimizationEngine
 from helper.cost import CostPlanner
 
 def test_simple_select():
@@ -18,16 +17,11 @@ def test_simple_select():
     print("="*70)
     
     # Query: SELECT name FROM employees WHERE salary > 50000
-    table_node = QueryTree("TABLE", "employees")
-    select_node = QueryTree("SIGMA", "salary > 50000")
-    select_node.add_child(table_node)
-    project_node = QueryTree("PROJECT", "name")
-    project_node.add_child(select_node)
+    query_text = "SELECT name FROM employees WHERE salary > 50000;"
     
-    # parsed query
-    query_text = "SELECT name FROM employees WHERE salary > 50000"
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
     # Plan dan print
     planner = CostPlanner()
@@ -42,20 +36,11 @@ def test_join_query():
     print("="*70)
     
     # Query: SELECT * FROM employees JOIN departments ON emp.dept_id = dept.id
-    table_emp = QueryTree("TABLE", "employees")
-    table_dept = QueryTree("TABLE", "departments")
+    query_text = "SELECT * FROM employees JOIN departments ON employees.dept_id = departments.id;"
     
-    join_node = QueryTree("JOIN", "INNER")
-    join_node.add_child(table_emp)
-    join_node.add_child(table_dept)
-    
-    project_node = QueryTree("PROJECT", "*")
-    project_node.add_child(join_node)
-    
-    # Create parsed query
-    query_text = "SELECT * FROM employees JOIN departments ON emp.dept_id = dept.id"
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
     # Plan dan print
     planner = CostPlanner()
@@ -74,35 +59,16 @@ def test_complex_query():
     #        WHERE e.salary > 50000
     #        ORDER BY e.name
     
-    table_emp = QueryTree("TABLE", "employees")
-    table_dept = QueryTree("TABLE", "departments")
-    
-    # Join
-    join_node = QueryTree("JOIN", "INNER")
-    join_node.add_child(table_emp)
-    join_node.add_child(table_dept)
-    
-    # Selection (WHERE)
-    select_node = QueryTree("SIGMA", "salary > 50000")
-    select_node.add_child(join_node)
-    
-    # Sort (ORDER BY)
-    sort_node = QueryTree("SORT", "e.name")
-    sort_node.add_child(select_node)
-    
-    # Projection (SELECT columns)
-    project_node = QueryTree("PROJECT", "e.name, d.name")
-    project_node.add_child(sort_node)
-    
-    # Create parsed query
     query_text = """
-    SELECT e.name, d.name 
+    SELECT e.name, d.name
     FROM employees e JOIN departments d ON e.dept_id = d.id
     WHERE e.salary > 50000
-    ORDER BY e.name
+    ORDER BY e.name;
     """
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
     # Plan dan print
     planner = CostPlanner()
@@ -117,26 +83,15 @@ def test_aggregation_query():
     print("="*70)
     
     # Query: SELECT dept_id, COUNT(*) FROM employees GROUP BY dept_id
+    query_text = "SELECT dept_id, COUNT(*) FROM employees GROUP BY dept_id;"
     
-    # Build query tree
-    table_node = QueryTree("TABLE", "employees")
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
-    # Group by
-    group_node = QueryTree("GROUP", "dept_id")
-    group_node.add_child(table_node)
-    
-    # Aggregation
-    agg_node = QueryTree("AGGREGATE", "COUNT(*)")
-    agg_node.add_child(group_node)
-    
-    # Projection
-    project_node = QueryTree("PROJECT", "dept_id, COUNT(*)")
-    project_node.add_child(agg_node)
-    
-    # Create parsed query
-    query_text = "SELECT dept_id, COUNT(*) FROM employees GROUP BY dept_id"
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
     # Plan dan print
     planner = CostPlanner()
@@ -151,23 +106,16 @@ def test_with_limit():
     print("="*70)
     
     # Query: SELECT * FROM orders WHERE status = 'completed' LIMIT 100
+    query_text = "SELECT * FROM orders WHERE status = 'completed' LIMIT 100;"
     
-    # Build query tree
-    table_node = QueryTree("TABLE", "orders")
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
-    select_node = QueryTree("SIGMA", "status = 'completed'")
-    select_node.add_child(table_node)
-    
-    limit_node = QueryTree("LIMIT", "100")
-    limit_node.add_child(select_node)
-    
-    project_node = QueryTree("PROJECT", "*")
-    project_node.add_child(limit_node)
-    
-    # Create parsed query
-    query_text = "SELECT * FROM orders WHERE status = 'completed' LIMIT 100"
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    # Plan dan print
+    planner = CostPlanner()
+    cost_plan = planner.plan_query(parsed_query)
+    planner.print_cost_breakdown(cost_plan)
     
     # Plan dan print
     planner = CostPlanner()
@@ -189,9 +137,10 @@ def print_table_statistics():
     print("-" * 70)
     
     for table in tables:
-        bf = planner.get_blocking_factor(table)
-        blocks = planner.get_total_blocks(table)
-        records = planner.get_total_records(table)
+        stats = planner.get_table_stats(table)
+        bf = stats.get('f_r', 0)
+        blocks = stats.get('b_r', 0)
+        records = stats.get('n_r', 0)
         print(f"{table:<15} {bf:<18} {blocks:<15} {records:<15}")
     
     print("="*70)
@@ -203,13 +152,11 @@ def test_get_cost_function():
     print("="*70)
     
     # Query: SELECT * FROM products
-    table_node = QueryTree("TABLE", "products")
-    project_node = QueryTree("PROJECT", "*")
-    project_node.add_child(table_node)
+    query_text = "SELECT * FROM products;"
     
-    query_text = "SELECT * FROM products"
-    parsed_query = ParsedQuery(query=query_text)
-    parsed_query.query_tree = project_node
+    # Parse query menggunakan OptimizationEngine
+    optimizer = OptimizationEngine()
+    parsed_query = optimizer.parse_query(query_text)
     
     # Test get_cost() function
     planner = CostPlanner()
