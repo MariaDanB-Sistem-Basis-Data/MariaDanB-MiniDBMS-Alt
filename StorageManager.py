@@ -201,8 +201,52 @@ class StorageManager:
         return rows_affected
 
     def delete_block(self, data_deletion):
-        # Implementation for deleting a block of data based on the data_deletion parameters
-        pass
+        table = data_deletion.table
+        conditions = data_deletion.conditions
+
+        schema = self.schema_manager.get_table_schema(table)
+        if schema is None:
+            raise ValueError(f"Tabel '{table}' tidak ditemukan")
+
+        schema_attrs = [attr["name"] for attr in schema.get_attributes()]
+        for cond in conditions:
+            if cond.column not in schema_attrs:
+                raise ValueError(f"Kolom '{cond.column}' tidak ada di tabel '{table}'")
+
+        table_path = os.path.join(self.base_path, f"{table}.dat")
+        if not os.path.exists(table_path):
+            raise FileNotFoundError(f"File data '{table_path}' tidak ditemukan")
+
+        rows_deleted = 0
+        pages = []
+
+        with open(table_path, "rb+") as f:
+            while page_bytes := f.read(PAGE_SIZE):
+                page = SlottedPage()
+                page.load(page_bytes)
+
+                i = 0
+                while i < page.record_count:
+                    record_bytes = page.get_record(i)
+                    record = self.row_serializer.deserialize(schema, record_bytes)
+
+                    if self._match_all(record, conditions):
+                        page.delete_record(i)
+                        rows_deleted += 1
+                        continue     
+                    else:
+                        i += 1
+
+                pages.append(page)
+
+            f.seek(0)
+            for page in pages:
+                f.write(page.serialize())
+
+            f.truncate(len(pages) * PAGE_SIZE)
+
+        return rows_deleted
+
 
     def set_index(self, table, column, index_type):
         # Implementation for setting an index on a specified table and column
