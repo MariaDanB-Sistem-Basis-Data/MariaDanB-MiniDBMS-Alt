@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from frm_model import LogEntry, LogEntryType, Checkpoint, ExecutionResult
@@ -10,7 +10,7 @@ from .Singleton import singleton
 class WriteAheadLog:
     """Singleton Write-Ahead Log for transaction logging."""
 
-    def __init__(self, logFilePath: str = "logs/wal.json"):
+    def __init__(self, logFilePath: str = "frm_logs/wal.json"):
         if not hasattr(self, 'initialized'):
             self._logSerializer = LogSerializer(logFilePath)
             self._currentLogId = 0
@@ -20,57 +20,120 @@ class WriteAheadLog:
             self._loadCurrentState()
 
     def _loadCurrentState(self) -> None:
-        #TODO: Load last logId and checkpointId from existing logs
-        pass
+        # Load last logId and checkpointId from existing logs
+        entries = self._logSerializer.readLogs()
+        if entries:
+            self._currentLogId = max(e.getLogId() for e in entries)
+        checkpoints = self._logSerializer.readCheckpoints()
+        if checkpoints:
+            self._currentCheckpointId = max(cp.getCheckpointId() for cp in checkpoints)
 
     def appendLog(self, entry: LogEntry) -> None:
-        #TODO: Add log entry to WAL buffer and persist to disk
-        pass
+        # Add log entry to WAL buffer 
+        # and persist to disk (note: salah?)
+        self._logBuffer.append(entry)
 
     def appendLogFromExecution(self, executionResult: ExecutionResult) -> LogEntry:
-        #TODO: Create and append log entry from ExecutionResult
-        pass
+        # Create and append log entry from ExecutionResult
+        logId = self.getNextLogId()
+        entry = LogEntry(
+            logId=logId,
+            transactionId=executionResult.getTransactionId(),
+            timestamp=datetime.now(),
+            entryType=LogEntryType.UPDATE,
+            dataItem=executionResult.getQuery() if hasattr(executionResult, "getQuery") else None,
+            oldValue=None,
+            newValue=executionResult.getData() if hasattr(executionResult, "getData") else None,
+        )
+        self.appendLog(entry)
+        return entry
 
     def getNextLogId(self) -> int:
-        #TODO: Generate next sequential log ID
-        pass
+        # Generate next sequential log ID
+        self._currentLogId += 1
+        return self._currentLogId
 
     def getLogsForTransaction(self, transactionId: int) -> List[LogEntry]:
-        #TODO: Retrieve all log entries for specific transaction
-        pass
+        # Retrieve all log entries for specific transaction
+        entries = self._logSerializer.readLogs()
+        return [e for e in entries if e.getTransactionId() == transactionId]
 
     def getLogsSinceCheckpoint(self, checkpointId: int) -> List[LogEntry]:
-        #TODO: Retrieve all log entries since specified checkpoint
-        pass
+        # Retrieve all log entries since specified checkpoint
+        checkpoints = self._logSerializer.readCheckpoints()
+        checkpoint = next((cp for cp in checkpoints if cp.getCheckpointId() == checkpointId), None)
+        if not checkpoint:
+            return []
+        lastLogId = checkpoint.getLastLogId()
+        entries = self._logSerializer.readLogs()
+        return [e for e in entries if e.getLogId() > lastLogId]
 
     def getLatestCheckpoint(self) -> Optional[Checkpoint]:
-        #TODO: Retrieve most recent checkpoint from log
-        pass
+        # Retrieve most recent checkpoint from log
+        cps = self._logSerializer.readCheckpoints()
+        if not cps:
+            return None
+        return max(cps, key=lambda cp: cp.getCheckpointId())
 
     def createCheckpoint(self, activeTransactions: List[int]) -> Checkpoint:
-        #TODO: Create new checkpoint entry in WAL
-        pass
+        # Create new checkpoint entry in WAL
+        self._currentCheckpointId += 1
+        now = datetime.now()
+        lastLogId = self._currentLogId
+        checkpoint = Checkpoint(
+            checkpointId=self._currentCheckpointId,
+            timestamp=now,
+            activeTransactions=activeTransactions,
+            lastLogId=lastLogId,
+        )
+        self._logSerializer.writeLogEntry(checkpoint.toDict())
+        return checkpoint
 
     def getAllLogsBackward(self, fromLogId: Optional[int] = None) -> List[LogEntry]:
-        #TODO: Retrieve logs in reverse order for undo operations
-        pass
+        # Retrieve logs in reverse order for undo operations
+        entries = self._logSerializer.readLogs()
+        if fromLogId is not None:
+            entries = [e for e in entries if e.getLogId() <= fromLogId]
+        return sorted(entries, key=lambda e: e.getLogId(), reverse=True)
 
     def flushBuffer(self) -> None:
-        #TODO: Write buffered log entries to persistent storage
-        pass
+        # Write buffered log entries to persistent storage
+        for entry in self._logBuffer:
+            self._logSerializer.writeLogEntry(entry.toDict())
+        self._logBuffer.clear()
 
     def needsFlush(self, bufferSizeThreshold: int = 50) -> bool:
-        #TODO: Check if log buffer should be flushed
-        pass
+        # Check if log buffer should be flushed
+        return len(self._logBuffer) >= bufferSizeThreshold
 
     def truncateBeforeCheckpoint(self, checkpointId: int) -> None:
-        #TODO: Remove log entries before specified checkpoint (log maintenance)
-        pass
+        # Remove log entries before specified checkpoint (log maintenance)
+        checkpoints = self._logSerializer.readCheckpoints()
+        checkpoint = next((cp for cp in checkpoints if cp.getCheckpointId() == checkpointId), None)
+        if not checkpoint:
+            return
+        self._logSerializer.truncateLogsBefore(checkpoint.getLastLogId())
 
     def verifyLogIntegrity(self) -> bool:
-        #TODO: Verify log sequence integrity (no gaps in log IDs)
-        pass
+        # Verify log sequence integrity (no gaps in log IDs)
+        entries = self._logSerializer.readLogs()
+        if not entries:
+            return True
+        sortedLogs = sorted(entries, key=lambda e: e.getLogId())
+        for i in range(1, len(sortedLogs)):
+            if sortedLogs[i].getLogId() != sortedLogs[i-1].getLogId() + 1:
+                return False
+        return True
 
     def getLogStatistics(self) -> dict:
-        #TODO: Return statistics about WAL (size, entry count, etc.)
-        pass
+        # Return statistics about WAL (size, entry count, etc.)
+        entries = self._logSerializer.readLogs()
+        checkpoint_dicts = self._logSerializer.readCheckpoints()
+        return {
+            "totalEntries": len(entries) + len(checkpoint_dicts),
+            "currentLogId": self._currentLogId,
+            "currentCheckpointId": self._currentCheckpointId,
+            "bufferSize": len(self._logBuffer),
+            "checkpointCount": len(checkpoint_dicts),
+            "operationCount": sum(1 for e in entries if e.getEntryType() == LogEntryType.UPDATE),
+        }

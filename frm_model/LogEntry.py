@@ -57,21 +57,39 @@ class LogEntry(Serializable):
         return self._newValue
 
     def toDict(self) -> Dict[str, Any]:
-        #TODO: Serialize to JSON
-        pass
+        return {
+            "logId": self._logId,
+            "transactionId": self._transactionId,
+            "timestamp": self._timestamp.isoformat(),
+            "entryType": self._entryType.value,
+            "dataItem": self._dataItem,
+            "oldValue": self._oldValue,
+            "newValue": self._newValue,
+        }
 
     @staticmethod
     def fromDict(data: Dict[str, Any]) -> 'LogEntry':
-        #TODO: Deserialize from JSON
-        pass
+        return LogEntry(
+            logId=data["logId"],
+            transactionId=data["transactionId"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            entryType=LogEntryType(data["entryType"]),
+            dataItem=data.get("dataItem"),
+            oldValue=data.get("oldValue"),
+            newValue=data.get("newValue")
+        )
 
     def performUndo(self) -> Any:
-        #TODO: Restore old value (Write V1 to Xj)
-        pass
+        """Restore old value (Write V1 to Xj)"""
+        if self._entryType == LogEntryType.UPDATE and self._dataItem is not None:
+            return self._oldValue
+        return None
 
     def performRedo(self) -> Any:
-        #TODO: Apply new value (Write V2 to Xj)
-        pass
+        """Apply new value (Write V2 to Xj)"""
+        if self._entryType in (LogEntryType.UPDATE, LogEntryType.COMPENSATION) and self._dataItem is not None:
+            return self._newValue
+        return None
 
     def toString(self) -> str:
         if self._entryType == LogEntryType.START:

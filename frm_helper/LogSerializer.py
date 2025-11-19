@@ -2,6 +2,9 @@ import json
 from typing import List, Dict, Any
 from datetime import datetime
 from pathlib import Path
+import shutil
+
+from frm_model import LogEntry, LogEntryType, Checkpoint
 
 
 class LogSerializer:
@@ -10,57 +13,114 @@ class LogSerializer:
         self._ensureLogDirectory()
 
     def _ensureLogDirectory(self) -> None:
-        #TODO: Create log directory if it doesn't exist
-        pass
+        # Create log directory if it doesn't exist
+        self._logFilePath.parent.mkdir(parents=True, exist_ok=True)
+        if not self._logFilePath.exists():
+            self._logFilePath.write_text("[]")
 
     def writeLogEntry(self, entryDict: Dict[str, Any]) -> None:
-        #TODO: Append single log entry to JSON file
-        pass
+        # Append single log entry to JSON file
+        entries = self.readAllLogs()
+        entries.append(entryDict)
+        self._logFilePath.write_text(json.dumps(entries, indent=2))
 
     def writeLogEntries(self, entries: List[Dict[str, Any]]) -> None:
-        #TODO: Append multiple log entries to JSON file
-        pass
+        # Append multiple log entries to JSON file
+        existingEntries = self.readAllLogs()
+        existingEntries.extend(entries)
+        self._logFilePath.write_text(json.dumps(existingEntries, indent=2))
 
     def readAllLogs(self) -> List[Dict[str, Any]]:
-        #TODO: Read all log entries from JSON file
-        pass
+        # Read all log entries from JSON file
+        if not self._logFilePath.exists():
+            return []
+        try:
+            return json.loads(self._logFilePath.read_text())
+        except json.JSONDecodeError:
+            return []
+
+    def readLogs(self) -> List[LogEntry]:
+        # Return all LogEntry items (without checkpoints)
+        raw = self.readAllLogs()
+        result: List[LogEntry] = []
+        for d in raw:
+            et = d.get("entryType") or d.get("entry_type")
+            if et in {t.value for t in LogEntryType} and et != LogEntryType.CHECKPOINT.value:
+                if "logId" not in d and "log_id" in d:
+                    d = {**d, "logId": d["log_id"]}
+                if "transactionId" not in d and "transaction_id" in d:
+                    d = {**d, "transactionId": d["transaction_id"]}
+                if "timestamp" in d and isinstance(d["timestamp"], datetime):
+                    d = {**d, "timestamp": d["timestamp"].isoformat()}
+                result.append(LogEntry.fromDict(d))
+        return result
+
+    def readCheckpoints(self) -> List[Checkpoint]:
+        # Return all checkpoint records from log file
+        raw = self.readAllLogs()
+        cps: List[Checkpoint] = []
+        for d in raw:
+            if d.get("type") == "checkpoint":
+                cps.append(Checkpoint.fromDict(d))
+            else:
+                et = d.get("entryType") or d.get("entry_type")
+                if et == LogEntryType.CHECKPOINT.value and "timestamp" in d:
+                    cps.append(Checkpoint.fromDict({
+                        "checkpointId": d.get("checkpointId", 0),
+                        "timestamp": d["timestamp"],
+                        "activeTransactions": d.get("activeTransactions", []),
+                        "lastLogId": d.get("lastLogId", d.get("logId", d.get("log_id", 0)))
+                    }))
+        return cps
 
     def readLogsSince(self, logId: int) -> List[Dict[str, Any]]:
-        #TODO: Read log entries starting from specified log_id
-        pass
+        # Read log entries starting from specified log_id
+        allLogs = self.readAllLogs()
+        return [log for log in allLogs if log.get("log_id", 0) >= logId]
 
     def readLogsBetween(self, startId: int, endId: int) -> List[Dict[str, Any]]:
-        #TODO: Read log entries within specified range
-        pass
+        # Read log entries within specified range
+        allLogs = self.readAllLogs()
+        return [log for log in allLogs if startId <= log.get("log_id", 0) <= endId]
 
     def clearLogs(self) -> None:
-        #TODO: Clear all log entries (use with caution)
-        pass
+         # Clear all log entries
+        self._logFilePath.write_text("[]")
 
     def truncateLogsBefore(self, logId: int) -> None:
-        #TODO: Remove log entries before specified log_id (after checkpoint)
-        pass
+        # Remove log entries before specified log_id (after checkpoint)
+        allLogs = self.readAllLogs()
+        filteredLogs = [log for log in allLogs if log.get("log_id", 0) >= logId]
+        self._logFilePath.write_text(json.dumps(filteredLogs, indent=2))
 
     def backupLogs(self, backupPath: str) -> None:
-        #TODO: Create backup copy of log file
-        pass
+        # Create backup copy of log file
+        backupFile = Path(backupPath)
+        backupFile.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self._logFilePath, backupFile)
 
     def restoreLogs(self, backupPath: str) -> None:
-        #TODO: Restore logs from backup file
-        pass
+        # Restore logs from backup file
+        backupFile = Path(backupPath)
+        if backupFile.exists():
+            shutil.copy2(backupFile, self._logFilePath)
 
     def _serializeDatetime(self, dt: datetime) -> str:
-        #TODO: Convert datetime to ISO format string
-        pass
+        # Convert datetime to ISO format string
+        return dt.isoformat()
 
     def _deserializeDatetime(self, dtStr: str) -> datetime:
-        #TODO: Convert ISO format string to datetime
-        pass
+        # Convert ISO format string to datetime
+        return datetime.fromisoformat(dtStr)
 
     def getLogFileSize(self) -> int:
-        #TODO: Return log file size in bytes
-        pass
+        # Return log file size in bytes
+        if self._logFilePath.exists():
+            return self._logFilePath.stat().st_size
+        return 0
 
     def isLogFileLarge(self, thresholdMb: float = 10.0) -> bool:
-        #TODO: Check if log file exceeds size threshold
-        pass
+        # Check if log file exceeds size threshold
+        sizeBytes = self.getLogFileSize()
+        sizeMb = sizeBytes / (1024 * 1024)
+        return sizeMb > thresholdMb
