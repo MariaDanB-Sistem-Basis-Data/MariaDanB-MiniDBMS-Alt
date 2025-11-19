@@ -42,6 +42,11 @@ class SlottedPage:
             offset = HEADER_SIZE + i * SLOT_SIZE
             record_start, record_length = struct.unpack("<II", self.data[offset:offset + SLOT_SIZE])
             self.slots.append((record_start, record_length))
+        
+        if self.slots:
+            self.free_record_offset = min(start for start, _ in self.slots)
+        else:
+            self.free_record_offset = PAGE_SIZE
 
     def get_record(self, slot_index):  
         record_start, record_length = self.slots[slot_index]
@@ -60,12 +65,14 @@ class SlottedPage:
             self.data[old_start:old_start + new_length] = new_record_bytes
 
             upper_data_start = old_start + new_length
-            upper_data = self.data[upper_data_start:PAGE_SIZE]
-            self.data[old_start + new_length:PAGE_SIZE - diff] = upper_data
+            upper_data_length = self.free_record_offset - upper_data_start
+            if upper_data_length > 0:
+                self.data[old_start + new_length : old_start + new_length + upper_data_length] = self.data[upper_data_start : upper_data_start + upper_data_length]
 
-            self.free_data_offset += diff
+            self.free_record_offset += diff
 
             self.slots[slot_index] = (old_start, new_length)
+
             for i, (start, length) in enumerate(self.slots):
                 if start < old_start:
                     continue
@@ -74,23 +81,54 @@ class SlottedPage:
             return True
         
         extra_space_needed = new_length - old_length
-        if self.free_data_offset - extra_space_needed < self.free_space_offset + SLOT_SIZE:
+
+        if self.free_record_offset - extra_space_needed < self.free_space_offset + SLOT_SIZE:
             return False
         
         upper_data_start = old_start + old_length
-        upper_data = self.data[upper_data_start:PAGE_SIZE]
-        self.data[old_start + new_length:PAGE_SIZE] = upper_data
+        upper_data_length = self.free_record_offset - upper_data_start
+        if upper_data_length > 0:
+            self.data[old_start + new_length : old_start + new_length + upper_data_length] = self.data[upper_data_start : upper_data_start + upper_data_length]
 
         self.data[old_start:old_start + new_length] = new_record_bytes
-        self.free_data_offset -= extra_space_needed
+
+        self.free_record_offset -= extra_space_needed
 
         self.slots[slot_index] = (old_start, new_length)
+
         for i, (start, length) in enumerate(self.slots):
             if start < old_start:
                 continue
             self.slots[i] = (start - extra_space_needed, length)
 
         return True
+    
+    def delete_record(self, slot_index):
+        old_start, old_length = self.slots[slot_index]
+
+        upper_data_length = old_start - self.free_record_offset
+        
+        if upper_data_length > 0:
+            self.data[self.free_record_offset + old_length : old_start + old_length] = self.data[self.free_record_offset : old_start]
+
+        # Update free_record_offset
+        self.free_record_offset += old_length
+
+        del self.slots[slot_index]
+        self.record_count -= 1
+        self.free_space_offset -= SLOT_SIZE
+
+        for i, (start, length) in enumerate(self.slots):
+            if start < old_start:  # Records physically above (lower offset)
+                self.slots[i] = (start + old_length, length)
+
+        for i, (start, length) in enumerate(self.slots):
+            offset = HEADER_SIZE + i * SLOT_SIZE
+            self.data[offset:offset + SLOT_SIZE] = struct.pack('<II', start, length)
+        
+        old_last_slot_offset = HEADER_SIZE + self.record_count * SLOT_SIZE
+        self.data[old_last_slot_offset:old_last_slot_offset + SLOT_SIZE] = b'\x00' * SLOT_SIZE
+
 
 
 
