@@ -1179,9 +1179,14 @@ def _parse_value_or_column(value_str):
        (value_str.startswith('"') and value_str.endswith('"')):
         return value_str[1:-1]
     
-    # column reference
-    if '.' in value_str and ' ' not in value_str:
-        return _parse_column_reference(value_str)
+    # column reference (tapi cek angka dulu, siapa tau float)
+    try:
+        if '.' in value_str:
+            return float(value_str)
+        else:
+            return int(value_str)
+    except ValueError:
+        pass
     
     # try number
     try:

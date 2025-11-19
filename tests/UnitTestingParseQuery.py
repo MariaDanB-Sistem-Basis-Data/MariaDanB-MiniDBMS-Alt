@@ -587,7 +587,7 @@ def test_update():
 
 def test_delete():
     engine = OptimizationEngine()
-    query = "DELETE FROM student WHERE gpa < 2.0;"
+    query = "DELETE FROM student WHERE gpa < 2.5;"
     result = engine.parse_query(query)
     
     print("=" * 50)
