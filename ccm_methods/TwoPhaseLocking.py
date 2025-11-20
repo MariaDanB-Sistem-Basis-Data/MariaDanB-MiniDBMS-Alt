@@ -1,5 +1,4 @@
-import random
-import time
+from datetime import datetime
 
 from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
 from ccm_helper.Operation import Operation
@@ -41,16 +40,10 @@ class TwoPhaseLocking(ConcurrencyMethod):
 
         resource_id = obj.resource_key
 
-        op_type = "R" if action == Action.READ else "W"
+        op_type = "r" if action == Action.READ else "w"
         operation = Operation(transaction_id, op_type, resource_id)
 
-        result = self.lock_manager.request_lock(op, return_lock_holders=True)
-
-        if isinstance(result, tuple):
-            success, lock_holders = result
-        else:
-            success = result
-            lock_holders = set()
+        success, lock_holders = self.lock_manager.request_lock(operation)
             
         if success:
             print(f"[VALID] {action.name} pada {resource_id} berhasil divalidasi")
@@ -59,17 +52,20 @@ class TwoPhaseLocking(ConcurrencyMethod):
             for h in lock_holders:
                 self.deadlock_detector.add_wait_edge(transaction_id, h)
 
-            has_dl, cycle = self.deadlock_detector.check_deadlock()
+            has_dl, cycles = self.deadlock_detector.check_deadlock()
             if has_dl:
-                victim = self.pick_victim(cycle) 
-                print(f"[DEADLOCK] Victim: T{victim}")
-                self.abort_transaction(victim)
-                return Response(False, f"Deadlock. Victim T{victim} di-abort.")
-
+                for cycle in cycles:
+                    victim = self.pick_victim(cycle) 
+                    print(f"[DEADLOCK] Victim: T{victim}")
+                    self.transaction_manager.abort_transaction(victim.get_transaction_id())
+                    return Response(False, f"Deadlock. Victim T{victim} di-abort.")
             # klo bukan deadlock, wound-wait
             wait = False
             for h in lock_holders:
-                if self.transaction_manager.get_transaction(transaction_id).get_start_time() < self.transaction_manager.get_transaction(h).get_start_time():
+                print(f"DEBUG: masuk loop")
+                print(f"start time T{transaction_id} = {self.transaction_manager.get_transaction(transaction_id).get_start_time()}")
+                print(f"start time T{h} = {self.transaction_manager.get_transaction(h).get_start_time()}")
+                if self.transaction_manager.get_transaction(transaction_id).get_start_time() > self.transaction_manager.get_transaction(h).get_start_time():
                     wait = True
                     break 
             if wait: 
@@ -107,7 +103,7 @@ class TwoPhaseLocking(ConcurrencyMethod):
     def pick_victim(self, cycle):
         # yg paling muda
         victim = None
-        max_start_time = -1
+        max_start_time = datetime.min
         
         for tid in cycle:
             trx = self.transaction_manager.get_transaction(tid)

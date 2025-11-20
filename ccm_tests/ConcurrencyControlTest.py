@@ -11,7 +11,7 @@ def run_concurrency_control_manager_tests():
     ccm.set_method(tpl)
 
     # Mulai transaksi
-    tid = ccm.begin_transaction(1)
+    tid = ccm.begin_transaction()
     assert ccm.transaction_manager.has_transaction(tid)
 
     # Log object

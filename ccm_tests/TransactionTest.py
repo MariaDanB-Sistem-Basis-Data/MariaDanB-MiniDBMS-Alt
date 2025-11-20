@@ -35,55 +35,54 @@ def run_transaction_manager_tests():
     tm = TransactionManager()
 
     # Begin transaction
-    tm.begin_transaction(1)
-    assert tm.has_transaction(1)
-    assert tm.get_transaction(1).status == TransactionStatus.ACTIVE
+    tid1 = tm.begin_transaction()
+    assert tm.has_transaction(tid1)
+    assert tm.get_transaction(tid1).status == TransactionStatus.ACTIVE
 
     # Commit transaction
-    tm.begin_transaction(2)
-    assert tm.commit_transaction(2) is True
-    assert tm.get_transaction(2).status == TransactionStatus.COMMITTED
+    tid2 = tm.begin_transaction()
+    assert tm.commit_transaction(tid2) is True
+    assert tm.get_transaction(tid2).status == TransactionStatus.COMMITTED
 
     # Abort transaction (success)
-    tm.begin_transaction(3)
-    assert tm.abort_transaction(3) is True
-    assert tm.get_transaction(3).status == TransactionStatus.ABORTED
+    tid3 = tm.begin_transaction()
+    assert tm.abort_transaction(tid3) is True
+    assert tm.get_transaction(tid3).status == TransactionStatus.ABORTED
 
     # Abort transaction (fail - committed)
-    tm.begin_transaction(4)
-    tm.commit_transaction(4)
-    assert tm.abort_transaction(4) is False
+    tid4 = tm.begin_transaction()
+    tm.commit_transaction(tid4)
+    assert tm.abort_transaction(tid4) is False
 
     # Remove transaction
-    tm.begin_transaction(5)
-    assert tm.remove_transaction(5) is True
-    assert tm.has_transaction(5) is False
+    tid5 = tm.begin_transaction()
+    assert tm.remove_transaction(tid5) is True
+    assert tm.has_transaction(tid5) is False
 
     # Active transaction list
     tm.clear()
-    tm.begin_transaction(6)
-    tm.begin_transaction(7)
-    tm.commit_transaction(7)
+    tid6 = tm.begin_transaction()
+    tid7 = tm.begin_transaction()
+    tm.commit_transaction(tid7)
     active_list = tm.get_active_transactions()
     print(active_list)
     assert len(active_list) == 1
-    assert active_list[0].transaction_id == 6
+    assert active_list[0].transaction_id == tid6
 
     # Active transaction IDs
     active_ids = tm.get_active_transaction_ids()
-    assert active_ids == [6]
-
+    assert active_ids == [tid6]
     # Clear completed transactions
-    tm.begin_transaction(8)
-    tm.commit_transaction(8)
+    tid8 = tm.begin_transaction()
+    tm.commit_transaction(tid8)
     tm.clearCompletedTransactions()
-    assert tm.get_transaction(8) is None if hasattr(tm, "get_transaction") else True
+    assert tm.get_transaction(tid8) is None if hasattr(tm, "get_transaction") else True
 
     # Statistics
     tm.clear()
-    tm.begin_transaction(10)
-    tm.begin_transaction(11)
-    tm.commit_transaction(11)
+    tid10 = tm.begin_transaction()
+    tid11 = tm.begin_transaction()
+    tm.commit_transaction(tid11)
     stats = tm.getStatistics()
 
     assert stats["ACTIVE"] == 1

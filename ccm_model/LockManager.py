@@ -10,7 +10,7 @@ class LockManager:
 			self.resources[resource_id] = Resource(resourceName=resource_id)
 		return self.resources[resource_id]
 
-	def request_lock(self, operation: Operation, return_lock_holders=False) -> bool:
+	def request_lock(self, operation: Operation) -> tuple[bool, set[int]]:
 		tx = operation.transaction_id
 		r_id = operation.resource_id
 		op = str(operation.operation_type).lower()
@@ -21,32 +21,40 @@ class LockManager:
 		want_exclusive = op in ('w', 'write')
 
 		if res.lockMode == 'X' and tx in res.lockedBy:
-			return True
+			return (True, set(res.lockedBy)) 
 
 		if want_shared:
 			if res.lockMode in (None, 'S'):
 				res.set_lock('S')
 				res.add_locker(tx)
-				return True
-			return (False, set(res.lockedBy)) if return_lock_holders else False
+				return (True, set(res.lockedBy)) 
+			lock_holders = set(res.lockedBy)
+			lock_holders.discard(tx)  
+			return (False, lock_holders)
 
 		if want_exclusive:
 			if res.lockMode is None:
 				res.set_lock('X')
 				res.clear_locker()
 				res.add_locker(tx)
-				return True
+				return (True, set(res.lockedBy)) 
 
 			if res.lockMode == 'S':
 				if res.lockedBy == {tx}:
 					res.set_lock('X')
 					res.clear_locker()
 					res.add_locker(tx)
-					return True
+					return (True, set(res.lockedBy)) 
 				else:
-					return (False, set(res.lockedBy)) if return_lock_holders else False
-			return (False, set(res.lockedBy)) if return_lock_holders else False
-		return (False, set(res.lockedBy)) if return_lock_holders else False
+					lock_holders = set(res.lockedBy)
+					lock_holders.discard(tx)  
+					return (False, lock_holders)
+			lock_holders = set(res.lockedBy)
+			lock_holders.discard(tx)  
+			return (False, lock_holders) 
+		lock_holders = set(res.lockedBy)
+		lock_holders.discard(tx)  
+		return (False, lock_holders) 
 
 	def release_locks(self, transaction_id:int) -> None:
 		for res in self.resources.values():

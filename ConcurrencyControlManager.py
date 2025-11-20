@@ -23,11 +23,11 @@ class ConcurrencyControlManager:
         self.concurrency_method = method
         method.set_transaction_manager(self.transaction_manager)
 
-    def begin_transaction(self, transaction_id) -> int:
+    def begin_transaction(self) -> int:
         """Memulai transaksi baru dan mengembalikan transaction_id."""
         print("[CCM] Begin transaction called")
 
-        transaction_id = self.transaction_manager.begin_transaction(transaction_id)
+        transaction_id = self.transaction_manager.begin_transaction()
 
         return transaction_id
     
