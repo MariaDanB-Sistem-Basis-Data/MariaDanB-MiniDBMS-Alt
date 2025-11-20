@@ -14,7 +14,8 @@ from query_optimizer.model.query_tree import QueryTree
 
 class QueryExecutor:
     def __init__(self) -> None:
-        self.storage_manager = StorageManager()
+        storage_path = os.path.join(os.path.dirname(__file__), '..', 'storage_manager', 'data')
+        self.storage_manager = StorageManager(storage_path)
         self.optimization_engine = OptimizationEngine()
 
     # execute SELECT query:
@@ -121,50 +122,19 @@ class QueryExecutor:
         
         return 0
 
-    # fetch all data dari table menggunakan storage manager
-    # will use dummy data if storage manager not implemented yet
     def _fetch_table_data(self, table_name: str) -> Rows:
-        storage_ready = hasattr(self.storage_manager, 'read_block') and \
-                       callable(getattr(self.storage_manager, 'read_block'))
-        
-        if storage_ready and self._is_storage_manager_read_implemented():
-            try:
-                data_retrieval = DataRetrieval(table=table_name, column="*", conditions=[])
-                result = self.storage_manager.read_block(data_retrieval)
-                
-                if result is not None and isinstance(result, list):
-                    print(f"✓ Data fetched from Storage Manager: {table_name}")
-                    return Rows.from_list(result)
-                else:
-                    return self._dummy_table_data(table_name)
-                    
-            except Exception as e:
-                print(f"Error calling Storage Manager read_block: {e}")
-                return self._dummy_table_data(table_name)
-        else:
-            return self._dummy_table_data(table_name)
-    
-    # check if storage manager read_block sudah diimplementasikan
-    def _is_storage_manager_read_implemented(self) -> bool:
         try:
-            test_retrieval = DataRetrieval(table="test", column="*", conditions=[])
-            result = self.storage_manager.read_block(test_retrieval)
-            return result is not None
-        except:
-            return False
-    
-    # return dummy data untuk testing ketika storage manager belum ready
-    def _dummy_table_data(self, table_name: str) -> Rows:
-        print(f"Using dummy data (Storage Manager not ready): {table_name}")
-        
-        dummy_data = [
-            {"id": 1, "name": "Alice", "age": 25, "city": "Jakarta"},
-            {"id": 2, "name": "Bob", "age": 30, "city": "Bandung"},
-            {"id": 3, "name": "Charlie", "age": 35, "city": "Jakarta"},
-            {"id": 4, "name": "David", "age": 28, "city": "Surabaya"},
-        ]
-        
-        return Rows.from_list(dummy_data)
+            data_retrieval = DataRetrieval(table=table_name, column="*", conditions=[])
+            result = self.storage_manager.read_block(data_retrieval)
+            
+            if result is not None and isinstance(result, list):
+                return Rows.from_list(result)
+            else:
+                return Rows.from_list([])
+                
+        except Exception as e:
+            print(f"Error fetching data from Storage Manager: {e}")
+            return Rows.from_list([])
 
     # apply PROJECT operation - select specific columns
     def _apply_projection(self, data: Rows, columns: str) -> Rows:
@@ -425,53 +395,28 @@ class QueryExecutor:
                 val = parts[1].strip().strip("'\"")
                 updates[col] = val
         
-        storage_ready = hasattr(self.storage_manager, 'write_block') and \
-                       callable(getattr(self.storage_manager, 'write_block'))
-        
-        if storage_ready and self._is_storage_manager_implemented():
-            try:
-                total_updated = 0
-                for col, val in updates.items():
-                    cond_objects = [self._parse_condition(c) for c in conditions] if conditions else []
-                    
-                    data_write = DataWrite(
-                        table=table_name, 
-                        column=col, 
-                        conditions=cond_objects, 
-                        new_value=val
-                    )
-                    
-                    result = self.storage_manager.write_block(data_write)
-                    
-                    if isinstance(result, int):
-                        total_updated = max(total_updated, result)
-                
-                print(f"✓ UPDATE executed via Storage Manager: {table_name} SET {updates} WHERE {conditions}")
-                return total_updated
-                
-            except Exception as e:
-                print(f"Error calling Storage Manager write_block: {e}")
-                return self._dummy_update(table_name, updates, conditions)
-        else:
-            return self._dummy_update(table_name, updates, conditions)
-    
-    # check if storage manager sudah diimplementasikan atau masih stub
-    def _is_storage_manager_implemented(self) -> bool:
         try:
-            test_write = DataWrite(table="test", column="test", conditions=[], new_value="test")
-            result = self.storage_manager.write_block(test_write)
-            return result is not None
-        except:
-            return False
-    
-    # dummy UPDATE implementation untuk testing ketika storage manager belum ready
-    def _dummy_update(self, table_name: str, updates: dict, conditions: list) -> int:
-        print(f"Using dummy UPDATE (Storage Manager not ready): {table_name} SET {updates} WHERE {conditions}")
-        
-        if conditions:
-            return len(conditions)
-        else:
-            return 1
+            total_updated = 0
+            for col, val in updates.items():
+                cond_objects = [self._parse_condition(c) for c in conditions] if conditions else []
+                
+                data_write = DataWrite(
+                    table=table_name, 
+                    column=col, 
+                    conditions=cond_objects, 
+                    new_value=val
+                )
+                
+                result = self.storage_manager.write_block(data_write)
+                
+                if isinstance(result, int):
+                    total_updated = max(total_updated, result)
+            
+            return total_updated
+            
+        except Exception as e:
+            print(f"Error calling Storage Manager write_block: {e}")
+            return 0
 
     # parse condition string to Condition object
     def _parse_condition(self, condition_str: str) -> Condition:
@@ -534,16 +479,13 @@ class QueryExecutor:
                 data_write = DataWrite(table=table_name, column=None, conditions=[], new_value=row_to_insert)
                 res = self.storage_manager.write_block(data_write)
 
-                # StorageManager._insert_record returns 1 on success
                 if isinstance(res, int):
                     return Rows.from_list([f"Inserted {res} rows"])
                 elif res:
                     return Rows.from_list([f"Inserted rows via storage manager: {res}"])
             except Exception as e:
                 print(f"Error calling StorageManager.write_block for insert: {e}")
-
-            # NOTE: fallback dummy, harusnya ga kepanggil
-            return Rows.from_list([f"DUMMY INSERT HIT"])
+                return -1
 
         except Exception as e:
             print(f"Error executing INSERT: {e}")
