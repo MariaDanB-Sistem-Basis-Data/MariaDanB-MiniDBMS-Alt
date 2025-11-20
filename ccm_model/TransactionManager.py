@@ -8,6 +8,7 @@ from ccm_model.Transaction import Transaction
 class TransactionManager:
     transactions: dict[int, 'Transaction'] = None
     initialized: bool = False
+    next_tid: int = 0
     
     def __post_init__(self):
         if self.transactions is None:
@@ -17,12 +18,14 @@ class TransactionManager:
     def clear(self) -> None:
         self.transactions.clear()
 
-    def begin_transaction(self, tid) -> int:
+    def begin_transaction(self) -> int:
+        tid = self.next_tid
         self.transactions[tid] = Transaction(
             transaction_id=tid , 
             status=TransactionStatus.ACTIVE,
             start_time=datetime.now()
         )
+        self.next_tid += 1
         return tid
     
     def get_transaction(self, transactionId: int) -> Transaction:
