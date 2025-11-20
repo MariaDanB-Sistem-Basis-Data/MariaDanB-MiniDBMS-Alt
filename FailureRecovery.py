@@ -1,45 +1,43 @@
 from typing import Dict, Optional, List, Any
 from datetime import datetime
 
-from frm_model import ExecutionResult, RecoveryCriteria, LogEntry, LogEntryType, Checkpoint
-from frm_helper import singleton, WriteAheadLog, Buffer, TransactionManager, RecoveryExecutor
+from frm_model.ExecutionResult import ExecutionResult, Rows
+from frm_model.RecoveryCriteria import RecoveryCriteria
+from frm_model.LogEntry import LogEntry, LogEntryType
+from frm_model.Checkpoint import Checkpoint
+from frm_helper.Singleton import singleton
+from frm_helper.WriteAheadLog import WriteAheadLog
+from frm_helper.Buffer import Buffer
 
 
 @singleton
 class FailureRecoveryManager:
-
     def __init__(
         self,
-        logFilePath: str = "logs/wal.json",
+        logFilePath: str = "frm_logs/wal.json",
         bufferSize: int = 100,
         checkpointIntervalSeconds: int = 300
     ):
         if not hasattr(self, 'initialized'):
             self._writeAheadLog = WriteAheadLog(logFilePath)
-            self._buffer: Buffer[Any] = Buffer(maxSize=bufferSize) # harusnya WAL pake kelas buffer sekalian no?
-            self._transactionManager = TransactionManager()
-            self._recoveryExecutor = RecoveryExecutor()
+            self._buffer: Buffer[Any] = Buffer(maxSize=bufferSize)
             self._checkpointInterval = checkpointIntervalSeconds
             self._lastCheckpointTime = datetime.now()
             self.initialized = True
 
     def writeLog(self, info: ExecutionResult) -> None:
-        #TODO: Extract data according to format
-        #TODO: Update transaction last access timestamp using TransactionManager (CC Manager?)
         next_log_id = self._writeAheadLog.getNextLogId()
-        
+
         query = info.getQuery()
 
-        # determine log entry type
         entry_type = LogEntryType.UPDATE
-        if "BEGIN" in query.upper():   # bcs di spek "begin transaction"
+        if "BEGIN" in query.upper():
             entry_type = LogEntryType.START
         elif "COMMIT" in query.upper():
             entry_type = LogEntryType.COMMIT
-        elif "ABORT" in query.upper():
+        elif "ABORT" in query.upper() or "ROLLBACK" in query.upper():
             entry_type = LogEntryType.ABORT
 
-        # extract data
         data_item = None
         old_val = None
         new_val = None
@@ -49,195 +47,236 @@ class FailureRecoveryManager:
 
         if isinstance(data, int):
             pass
-        elif isinstance(data, ExecutionResult.Rows):
+        elif isinstance(data, Rows):
             rows_data = data.getData()
-            # asumsi 1 query results in 1 row?
             if rows_data and len(rows_data) > 0:
                 update_details = rows_data[0]
 
-        # expected format (NTAR SESUAIN):
-        # {'table': 'A', 'column': 'x', 'id': 1, 'old_val': 10, 'new_val': 20}
+        # {'table': 'table_name', 'column': 'col_name', 'id': row_id, 'old_value': old, 'new_value': new}
         if entry_type == LogEntryType.UPDATE and update_details:
             table = update_details.get('table', '')
             col = update_details.get('column', '')
             row_id = update_details.get('id', '')
-            
-            data_item = f"{table}.{col}:{row_id}"
-            old_val = update_details.get('old_val')
-            new_val = update_details.get('new_val')
+
+            data_item = f"{table}.{col}[{row_id}]"
+            old_val = update_details.get('old_value')
+            new_val = update_details.get('new_value')
 
         log_entry = LogEntry(
-            logId = next_log_id,
-            transactionId = info.transaction_id,
-            timestamp = datetime.now(),
-            entryType = entry_type,
-            dataItem = data_item,
-            oldValue = old_val,
-            newValue = new_val
+            logId=next_log_id,
+            transactionId=info.getTransactionId(),
+            timestamp=datetime.now(),
+            entryType=entry_type,
+            dataItem=data_item,
+            oldValue=old_val,
+            newValue=new_val
         )
 
-        # write to WAL
+        # Write to WAL buffer (WAL protocol: log before data write)
         self._writeAheadLog.appendLog(log_entry)
 
-        # update transaction last access time
-        txn = self._transactionManager.getTransaction(info.getTransactionId())
-        if txn:
-            txn.updateLastAccessTimestamp(log_entry.timestamp)
-        
-        # check trigger for checkpoint (buffer nearly full or time interval exceeded)
+        # Trigger checkpoint if needed
         if self._writeAheadLog.needsFlush() or self._shouldCheckpoint():
             self.saveCheckpoint()
 
-    def saveCheckpoint(self) -> None:
-        # get dirty entries from buffer n flush to storage
+    def saveCheckpoint(self, activeTransactions: Optional[List[int]] = None) -> None:
+        # Flush WAL buffer to persistent storage
         self._writeAheadLog.flushBuffer()
 
-        # create checkpoint with active transactions
-        active_txns = self._transactionManager.getActiveTransactionIds()
-        checkpoint = self._writeAheadLog.createCheckpoint(active_txns)
+        # Create checkpoint with active transaction list (provided by CCM)
+        if activeTransactions is None:
+            activeTransactions = []
 
-        # update last checkpoint time
+        checkpoint = self._writeAheadLog.createCheckpoint(activeTransactions)
+
+        # Update last checkpoint time
         self._lastCheckpointTime = datetime.now()
 
-        # truncate old log entries before checkpoint
+        # Truncate old log entries before checkpoint (log maintenance)
         self._writeAheadLog.truncateBeforeCheckpoint(checkpoint.getCheckpointId())
 
-    def recover(self, criteria: RecoveryCriteria) -> None:
-        #TODO: write old value to storage (StorageManager?)
+    def recover(self, criteria: RecoveryCriteria) -> List[Dict[str, Any]]:
+        """
+        Perform transaction rollback based on recovery criteria.
+        Based on Silberschatz Section 16.4.3 - Undo and Redo Operations.
+        Returns list of undo operations to be executed by Storage Manager.
+        """
+        undo_operations = []
 
-        # get logs backward from WAL
+        # Get logs backward from WAL for undo
         logs = self._writeAheadLog.getAllLogsBackward()
 
-        # filter logs matching recovery criteria
+        # Filter logs matching recovery criteria and perform undo
         for log in logs:
-            if criteria.getTimestamp() and log.timestamp < criteria.getTimestamp():
+            if criteria.getTimestamp() and log.getTimestamp() < criteria.getTimestamp():
                 break
 
-            if criteria.getTransactionId() and log.transactionId != criteria.getTransactionId():
+            if criteria.getTransactionId() and log.getTransactionId() != criteria.getTransactionId():
                 continue
 
-            # perform undo for UPDATE logs
-            if log.entryType == LogEntryType.UPDATE:
-                val_restored = log.performUndo()
-                if val_restored is not None:
+            # Perform undo for UPDATE logs
+            if log.getEntryType() == LogEntryType.UPDATE:
+                old_value = log.performUndo()
+                if old_value is not None:
+                    # Create compensation log record (CLR)
                     clr_id = self._writeAheadLog.getNextLogId()
                     clr_entry = LogEntry(
-                        logId = clr_id,
-                        transactionId = log.getTransactionId(),
-                        timestamp = datetime.now(),
-                        entryType = LogEntryType.COMPENSATION,
-                        dataItem = log.getDataItem(),
-                        newValue = val_restored,
-                        undoLogId = log.logId
+                        logId=clr_id,
+                        transactionId=log.getTransactionId(),
+                        timestamp=datetime.now(),
+                        entryType=LogEntryType.COMPENSATION,
+                        dataItem=log.getDataItem(),
+                        newValue=old_value
                     )
-                    
-                    # write compensation log record (clr)
+
+                    # Write CLR to WAL
                     self._writeAheadLog.appendLog(clr_entry)
 
-                    # write old value to storage (not done)
+                    # Add undo operation for Storage Manager to execute
+                    undo_operations.append({
+                        'data_item': log.getDataItem(),
+                        'old_value': old_value,
+                        'transaction_id': log.getTransactionId()
+                    })
+
+        return undo_operations
 
     def _shouldCheckpoint(self) -> bool:
         # check if checkpoint interval has elapsed
         time_elapsed = (datetime.now() - self._lastCheckpointTime).total_seconds()
         return time_elapsed >= self._checkpointInterval
 
-    def recoverFromSystemFailure(self) -> None:
-        # ARIES-style recovery after system crash (analysis, redo, undo)
-        _, _, active_txns, last_checkpoint = self._analysisPhase()
-        self._redoPhase(last_checkpoint)
-        self._undoPhase(active_txns)
+    def recoverFromSystemFailure(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        ARIES-style recovery after system crash.
+        Based on Silberschatz Section 16.8 - ARIES Recovery Algorithm.
+        Three phases: Analysis, Redo, Undo.
+        Returns dict with 'redo' and 'undo' operations for Storage Manager.
+        """
+        committed, aborted, active_txns, last_checkpoint = self._analysisPhase()
+        redo_ops = self._redoPhase(last_checkpoint)
+        undo_ops = self._undoPhase(active_txns)
 
-    def _analysisPhase(self) -> tuple: 
+        return {
+            'redo_operations': redo_ops,
+            'undo_operations': undo_ops,
+            'committed_transactions': list(committed),
+            'aborted_transactions': list(aborted),
+            'active_transactions': list(active_txns)
+        }
+
+    def _analysisPhase(self) -> tuple:
+        """
+        Analysis phase: Determine which transactions committed, aborted, or were active.
+        Based on Silberschatz Section 16.8.3.
+        """
         committed = set()
         aborted = set()
         active = set()
 
-        # scan logs from last checkpoint
+        # Scan logs from last checkpoint
         last_checkpoint = self._writeAheadLog.getLatestCheckpoint()
         if last_checkpoint:
+            # Start with active transactions from checkpoint
             active = set(last_checkpoint.getActiveTransactions())
             logs_to_scan = self._writeAheadLog.getLogsSinceCheckpoint(last_checkpoint.getCheckpointId())
-        else: # no checkpoint, scan all logs
-            logs_to_scan = self._writeAheadLog.getAllLogsBackward()[::-1] # reverse to get forward order
-        
+        else:
+            # No checkpoint, scan all logs from beginning
+            logs_to_scan = self._writeAheadLog.getAllLogsBackward()[::-1]
+
         for log in logs_to_scan:
             txn_id = log.getTransactionId()
             entry_type = log.getEntryType()
-            
+
             if entry_type == LogEntryType.START:
                 active.add(txn_id)
             elif entry_type == LogEntryType.COMMIT:
-                # remove committed txn from active n add to committed
                 if txn_id in active:
                     active.remove(txn_id)
                 committed.add(txn_id)
             elif entry_type == LogEntryType.ABORT:
-                # remove aborted txn from active n add to aborted
                 if txn_id in active:
                     active.remove(txn_id)
                 aborted.add(txn_id)
 
         return committed, aborted, active, last_checkpoint
 
-    def _redoPhase(self, checkpoint: Optional[Checkpoint]) -> None:
-        #TODO: write new value to storage (StorageManager?)
+    def _redoPhase(self, checkpoint: Optional[Checkpoint]) -> List[Dict[str, Any]]:
+        """
+        Redo phase: Replay all updates from checkpoint forward.
+        Based on Silberschatz Section 16.8.4.
+        """
+        redo_operations = []
         start_log_id = checkpoint.getLastLogId() if checkpoint else 0
-        logs_to_redo = self._writeAheadLog.getAllLogsBackward()[::-1] # forward order
-        
+        logs_to_redo = self._writeAheadLog.getAllLogsBackward()[::-1]  # Forward order
+
         for log in logs_to_redo:
-            # skip logs before checkpoint
+            # Skip logs before checkpoint
             if log.getLogId() <= start_log_id:
                 continue
 
-            # redo UPDATE and COMPENSATION logs
+            # Redo UPDATE and COMPENSATION logs
             if log.getEntryType() in (LogEntryType.UPDATE, LogEntryType.COMPENSATION):
-                val_applied = log.performRedo()
-                
-                if val_applied is not None:
-                    # write new value to storage (not done)
-                    pass
+                new_value = log.performRedo()
 
-    def _undoPhase(self, activeTransactions: List[int]) -> None:
-        #TODO: write old value to storage (StorageManager?)
+                if new_value is not None:
+                    # Add redo operation for Storage Manager
+                    redo_operations.append({
+                        'data_item': log.getDataItem(),
+                        'new_value': new_value,
+                        'transaction_id': log.getTransactionId()
+                    })
 
+        return redo_operations
+
+    def _undoPhase(self, activeTransactions: List[int]) -> List[Dict[str, Any]]:
+        """
+        Undo phase: Rollback all incomplete transactions.
+        Based on Silberschatz Section 16.8.5.
+        """
+        undo_operations = []
         logs_backward = self._writeAheadLog.getAllLogsBackward()
 
         for log in logs_backward:
             if log.getTransactionId() in activeTransactions:
-                # perform undo for UPDATE logs
+                # Perform undo for UPDATE logs
                 if log.getEntryType() == LogEntryType.UPDATE:
-                    val_restored = log.performUndo()
-                    if val_restored is not None:
+                    old_value = log.performUndo()
+                    if old_value is not None:
+                        # Create compensation log record (CLR)
                         clr_id = self._writeAheadLog.getNextLogId()
                         clr_entry = LogEntry(
-                            logId = clr_id,
-                            transactionId = log.getTransactionId(),
-                            timestamp = datetime.now(),
-                            entryType = LogEntryType.COMPENSATION,
-                            dataItem = log.getDataItem(),
-                            newValue = val_restored
+                            logId=clr_id,
+                            transactionId=log.getTransactionId(),
+                            timestamp=datetime.now(),
+                            entryType=LogEntryType.COMPENSATION,
+                            dataItem=log.getDataItem(),
+                            newValue=old_value
                         )
 
-                        # write compensation log record (clr)
+                        # Write CLR to WAL
                         self._writeAheadLog.appendLog(clr_entry)
 
-                        # write old value to storage (not done)
+                        # Add undo operation for Storage Manager
+                        undo_operations.append({
+                            'data_item': log.getDataItem(),
+                            'old_value': old_value,
+                            'transaction_id': log.getTransactionId()
+                        })
 
+        # Write ABORT log for each incomplete transaction
         for txn_id in activeTransactions:
-            # write ABORT log for each active transactions undone
             abort_log_id = self._writeAheadLog.getNextLogId()
             abort_entry = LogEntry(
-                logId = abort_log_id,
-                transactionId = txn_id,
-                timestamp = datetime.now(),
-                entryType = LogEntryType.ABORT
+                logId=abort_log_id,
+                transactionId=txn_id,
+                timestamp=datetime.now(),
+                entryType=LogEntryType.ABORT
             )
             self._writeAheadLog.appendLog(abort_entry)
+
+        return undo_operations
 
 
 def getFailureRecoveryManager() -> FailureRecoveryManager:
     return FailureRecoveryManager()
-
-if __name__ == "__main__":
-    frm = getFailureRecoveryManager()
-    print("FailureRecoveryManager initialized")

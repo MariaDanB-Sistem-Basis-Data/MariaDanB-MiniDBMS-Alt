@@ -18,8 +18,11 @@ class RecoveryCriteria:
         return self._transactionId
 
     def matchesEntry(self, entryTimestamp: datetime, entryTransactionId: int) -> bool:
-        #TODO: Check if log entry matches criteria
-        pass
+        if self._timestamp is not None and entryTimestamp < self._timestamp:
+            return False
+        if self._transactionId is not None and entryTransactionId != self._transactionId:
+            return False
+        return True
 
     def isValid(self) -> bool:
         return self._timestamp is not None or self._transactionId is not None

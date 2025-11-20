@@ -16,12 +16,12 @@ class Rows:
         return self._rowsCount
 
     def addRow(self, row: Dict[str, Any]) -> None:
-        #TODO: Add row to data list
-        pass
+        self._data.append(row)
+        self._rowsCount += 1
 
     def clear(self) -> None:
-        #TODO: Clear all rows
-        pass
+        self._data.clear()
+        self._rowsCount = 0
 
 
 class ExecutionResult(Serializable):
@@ -57,10 +57,42 @@ class ExecutionResult(Serializable):
         return self._query
 
     def toDict(self) -> Dict[str, Any]:
-        #TODO: Convert ExecutionResult to dictionary for serialization
-        pass
+        data_dict = None
+        if isinstance(self._data, Rows):
+            data_dict = {
+                "type": "rows",
+                "data": self._data.getData(),
+                "rowsCount": self._data.getRowsCount()
+            }
+        else:
+            data_dict = {
+                "type": "int",
+                "value": self._data
+            }
+
+        return {
+            "transactionId": self._transactionId,
+            "timestamp": self._timestamp.isoformat(),
+            "message": self._message,
+            "data": data_dict,
+            "query": self._query
+        }
 
     @staticmethod
     def fromDict(data: Dict[str, Any]) -> 'ExecutionResult':
-        #TODO: Create ExecutionResult from dictionary
-        pass
+        data_obj = None
+        if data["data"]["type"] == "rows":
+            rows = Rows()
+            for row in data["data"]["data"]:
+                rows.addRow(row)
+            data_obj = rows
+        else:
+            data_obj = data["data"]["value"]
+
+        return ExecutionResult(
+            transactionId=data["transactionId"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            message=data["message"],
+            data=data_obj,
+            query=data["query"]
+        )

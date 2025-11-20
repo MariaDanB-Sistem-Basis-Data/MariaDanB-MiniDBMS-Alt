@@ -4,7 +4,8 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
-from frm_model import LogEntry, LogEntryType, Checkpoint
+from frm_model.LogEntry import LogEntry, LogEntryType
+from frm_model.Checkpoint import Checkpoint
 
 
 class LogSerializer:

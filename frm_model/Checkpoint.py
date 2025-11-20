@@ -35,13 +35,22 @@ class Checkpoint(Serializable):
         return len(self._activeTransactions) > 0
 
     def toDict(self) -> Dict[str, Any]:
-        #TODO: Serialize to JSON
-        pass
+        return {
+            "type": "checkpoint",
+            "checkpointId": self._checkpointId,
+            "timestamp": self._timestamp.isoformat(),
+            "activeTransactions": self._activeTransactions,
+            "lastLogId": self._lastLogId
+        }
 
     @staticmethod
     def fromDict(data: Dict[str, Any]) -> 'Checkpoint':
-        #TODO: Deserialize from JSON
-        pass
+        return Checkpoint(
+            checkpointId=data["checkpointId"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            activeTransactions=data["activeTransactions"],
+            lastLogId=data["lastLogId"]
+        )
 
     def toString(self) -> str:
         return f"<checkpoint {self._activeTransactions}>"
