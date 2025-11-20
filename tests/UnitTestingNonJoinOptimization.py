@@ -46,16 +46,7 @@ class TestNonJoinOptimization(unittest.TestCase):
         print("Query:", sql)
         print("\nBefore:")
         print(self._print_tree(parsed.query_tree))
-        
-        # Ambil node SIGMA dari query tree
-        sigma_node = parsed.query_tree
-        while sigma_node and sigma_node.type != "SIGMA":
-            if sigma_node.childs:
-                sigma_node = sigma_node.childs[0]
-            else:
-                break
-        
-        result = decompose_conjunctive_selection(sigma_node)
+        result = decompose_conjunctive_selection(parsed.query_tree)
         
         print("After:")
         print(self._print_tree(result))
@@ -74,25 +65,37 @@ class TestNonJoinOptimization(unittest.TestCase):
         parsed = self.engine.parse_query(sql)
         
         print("Query:", sql)
-        print("\nBefore:")
+        print("\nBefore decompose:")
         print(self._print_tree(parsed.query_tree))
         
-        # Ambil root SIGMA
-        sigma_node = parsed.query_tree
-        while sigma_node and sigma_node.type != "SIGMA":
-            if sigma_node.childs:
-                sigma_node = sigma_node.childs[0]
-            else:
-                break
+        # Decompose dulu untuk membuat nested SIGMA
+        decomposed = decompose_conjunctive_selection(parsed.query_tree)
         
-        result = swap_selection_order(sigma_node)
+        print("\nAfter decompose (before swap):")
+        print(self._print_tree(decomposed))
         
-        print("After:")
+        # Simpan nilai sigma teratas sebelum swap
+        if decomposed.type == "SIGMA":
+            old_outer_val = str(decomposed.val)
+            old_inner_val = str(decomposed.childs[0].val) if decomposed.childs and decomposed.childs[0].type == "SIGMA" else None
+        
+        result = swap_selection_order(decomposed)
+        
+        print("\nAfter swap:")
         print(self._print_tree(result))
         
         # Cek urutannya tertukar
         self.assertEqual(result.type, "SIGMA")
-        print("✓ Test passed: Selection order swapped")
+        if result.childs and result.childs[0].type == "SIGMA":
+            new_outer_val = str(result.val)
+            new_inner_val = str(result.childs[0].val)
+            # Outer dan inner harus bertukar
+            if old_inner_val:
+                self.assertEqual(new_outer_val, old_inner_val)
+                self.assertEqual(new_inner_val, old_outer_val)
+                print("✓ Test passed: Selection order swapped correctly")
+        else:
+            print("Note: Structure doesn't have nested SIGMA after swap")
     
     def test_eliminate_redundant_projections(self):
         """Test Rule 3: ΠL1(ΠL2(...ΠLn(E))) = ΠL1(E)"""
@@ -100,10 +103,6 @@ class TestNonJoinOptimization(unittest.TestCase):
         
         # Buat manual nested projections karena SQL tidak akan generate ini
         # (Ini edge case yang sulit dibuat dari SQL biasa)
-        sql = "SELECT name FROM students;"
-        parsed = self.engine.parse_query(sql)
-        
-        # Manual tambahkan redundant projections untuk testing
         table = QueryTree("TABLE", "students")
         proj3 = QueryTree("PROJECT", "name, age, id")
         proj3.add_child(table)
@@ -139,15 +138,7 @@ class TestNonJoinOptimization(unittest.TestCase):
         print("\nBefore:")
         print(self._print_tree(parsed.query_tree))
         
-        # Cari SIGMA node
-        sigma_node = parsed.query_tree
-        while sigma_node and sigma_node.type != "SIGMA":
-            if sigma_node.childs:
-                sigma_node = sigma_node.childs[0]
-            else:
-                break
-        
-        result = push_selection_through_join_single(sigma_node)
+        result = push_selection_through_join_single(parsed.query_tree)
         
         print("After:")
         print(self._print_tree(result))
@@ -170,15 +161,7 @@ class TestNonJoinOptimization(unittest.TestCase):
         print("\nBefore:")
         print(self._print_tree(parsed.query_tree))
         
-        # Cari SIGMA node pertama
-        sigma_node = parsed.query_tree
-        while sigma_node and sigma_node.type != "SIGMA":
-            if sigma_node.childs:
-                sigma_node = sigma_node.childs[0]
-            else:
-                break
-        
-        result = push_selection_through_join_split(sigma_node)
+        result = push_selection_through_join_split(parsed.query_tree)
         
         print("After:")
         print(self._print_tree(result))
@@ -201,15 +184,7 @@ class TestNonJoinOptimization(unittest.TestCase):
         print("\nBefore:")
         print(self._print_tree(parsed.query_tree))
         
-        # Cari PROJECT node
-        proj_node = parsed.query_tree
-        while proj_node and proj_node.type != "PROJECT":
-            if proj_node.childs:
-                proj_node = proj_node.childs[0]
-            else:
-                break
-        
-        result = push_projection_through_join_simple(proj_node)
+        result = push_projection_through_join_simple(parsed.query_tree)
         
         print("After:")
         print(self._print_tree(result))
@@ -232,10 +207,7 @@ class TestNonJoinOptimization(unittest.TestCase):
         print("\nBefore:")
         print(self._print_tree(parsed.query_tree))
         
-        # Cari PROJECT node
-        proj_node = parsed.query_tree
-        
-        result = push_projection_through_join_with_join_attrs(proj_node)
+        result = push_projection_through_join_with_join_attrs(parsed.query_tree)
         
         print("After:")
         print(self._print_tree(result))

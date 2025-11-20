@@ -1,5 +1,18 @@
 from model.parsed_query import ParsedQuery
-from model.query_tree import QueryTree
+from model.query_tree import (
+    QueryTree,
+    ConditionNode,
+    LogicalNode,
+    ColumnNode,
+    OrderByItem,
+    SetClause,
+    ColumnDefinition,
+    ForeignKeyDefinition,
+    TableReference,
+    InsertData,
+    CreateTableData,
+    DropTableData
+)
 from helper.helper import (
     fold_selection_with_cartesian,
     merge_selection_into_join,
@@ -15,7 +28,6 @@ from helper.helper import (
     validate_query,
     _get_condition_from_where,
     _get_limit,
-    _get_column_from_order_by,
     _get_column_from_group_by,
     _parse_from_clause,
     _extract_set_conditions,
@@ -33,46 +45,53 @@ from helper.helper import (
     push_projection_through_join_with_join_attrs,
     _get_order_by_info,
     _parse_drop_table,
-    _parse_create_table
+    _parse_create_table,
+    parse_where_condition,
+    parse_columns_from_string,
+    parse_order_by_string,
+    parse_group_by_string,
+    parse_insert_columns_string,
+    parse_insert_values_string,
+    _parse_column_reference,
+    _theta_pred
 )
 
 from helper.stats import get_stats
 
 class OptimizationEngine:
     
+    # parse sql query string dan return ParsedQuery object
     def parse_query(self, query: str) -> ParsedQuery:
 
         if not query:
             raise Exception("Query is empty")
         
-        # Query validation
         is_valid, message = validate_query(query)
         if not is_valid:
             raise Exception(f"Query validation failed: {message}")
         
-        # Remove semicolon and extra whitespaces
         q = query.strip().rstrip(';').strip()
         
         parse_result = ParsedQuery(query=query)
         
         try:
-            # Parse SELECT statement
             if q.upper().startswith("SELECT"):
                 # Init nodes
                 current_root = None
                 last_node = None
                 
-                # 1. Parse PROJECT (SELECT columns)
-                columns = _get_columns_from_select(q)
-                if columns != "*":  # only create PROJECT node if not selecting all columns
-                    proj = QueryTree(type="PROJECT", val=columns)
+                # 1. parse PROJECT (SELECT columns)
+                columns_str = _get_columns_from_select(q)
+                if columns_str != "*":
+                    columns_list = parse_columns_from_string(columns_str)
+                    proj = QueryTree(type="PROJECT", val=columns_list)
                     current_root = proj
                     last_node = proj
                 
-                # 2. Parse LIMIT
+                # 2. parse LIMIT
                 if "LIMIT" in q.upper():
                     limit_val = _get_limit(q)
-                    lim = QueryTree(type="LIMIT", val=str(limit_val))
+                    lim = QueryTree(type="LIMIT", val=limit_val)
                     
                     if last_node:
                         last_node.add_child(lim)
@@ -80,10 +99,12 @@ class OptimizationEngine:
                         current_root = lim
                     last_node = lim
                 
-                # 3. Parse ORDER BY
+                # 3. parse ORDER BY
                 if "ORDER BY" in q.upper():
-                    order_info = _get_order_by_info(q)
-                    sort = QueryTree(type="SORT", val=order_info)
+                    order_info_str = _get_order_by_info(q)
+                    order_by_list = parse_order_by_string(order_info_str)
+                    
+                    sort = QueryTree(type="SORT", val=order_by_list)
                     
                     if last_node:
                         last_node.add_child(sort)
@@ -91,10 +112,12 @@ class OptimizationEngine:
                         current_root = sort
                     last_node = sort
                 
-                # 4. Parse GROUP BY
+                # 4. parse GROUP BY
                 if "GROUP BY" in q.upper():
-                    group_col = _get_column_from_group_by(q)
-                    group = QueryTree(type="GROUP", val=group_col)
+                    group_col_str = _get_column_from_group_by(q)
+                    group_by_list = parse_group_by_string(group_col_str)
+                    
+                    group = QueryTree(type="GROUP", val=group_by_list)
                     
                     if last_node:
                         last_node.add_child(group)
@@ -102,53 +125,20 @@ class OptimizationEngine:
                         current_root = group
                     last_node = group
                 
-                # 5. Parse WHERE (SIGMA)
+                # 5. parse WHERE (SIGMA)
                 if "WHERE" in q.upper():
-                    where_cond = _get_condition_from_where(q)
+                    where_cond_str = _get_condition_from_where(q)
+                    condition = parse_where_condition(where_cond_str)
                     
-                    has_and = " AND " in where_cond.upper()
-                    has_or = " OR " in where_cond.upper()
+                    sigma = QueryTree(type="SIGMA", val=condition)
                     
-                    # Case 1: Mixed (still not supported)
-                    if has_and and has_or:
-                        raise Exception("Mixed AND/OR clauses are not supported")
-                    
-                    # Case 2: OR-only
-                    elif has_or:
-                        or_node = QueryTree(type="OR")
-                        if last_node:
-                            last_node.add_child(or_node)
-                        else:
-                            current_root = or_node
-                        
-                        or_conditions = where_cond.split(" OR ")
-
-                        for cond in or_conditions:
-                            sigma_node = QueryTree(type="SIGMA", val=cond.strip())
-                            or_node.add_child(sigma_node)
-                        
-                        last_node = or_node
-
-                    # Case 3: AND-only (atau kondisi tunggal)
-                    elif has_and or (not has_and and not has_or and where_cond):
-                        where_split = where_cond.split(" AND ")
-                        
-                        first_sigma = QueryTree(type="SIGMA", val=where_split[0].strip())
-                        
-                        if last_node:
-                            last_node.add_child(first_sigma)
-                        else:
-                            current_root = first_sigma
-                        
-                        temp_sigma = first_sigma
-                        for cond in where_split[1:]:
-                            next_sigma = QueryTree(type="SIGMA", val=cond.strip())
-                            temp_sigma.add_child(next_sigma)
-                            temp_sigma = next_sigma
-                        
-                        last_node = temp_sigma
-                        
-                # 6. Parse FROM (TABLE/JOIN with AS support)
+                    if last_node:
+                        last_node.add_child(sigma)
+                    else:
+                        current_root = sigma
+                    last_node = sigma
+                
+                # 6. parse FROM
                 if last_node:
                     if last_node.type == "OR":
                         for child in last_node.childs:
@@ -165,129 +155,120 @@ class OptimizationEngine:
                     current_root = from_node
                 
                 parse_result.query_tree = current_root
-            
-            # Parse UPDATE statement
+          
             elif q.upper().startswith("UPDATE"):
                 # Init nodes
                 current_root = None
                 last_node = None
                 
-                # 1. Parse SET conditions 
-                set_conditions = _extract_set_conditions(q)
+                # 1. parse SET 
+                set_conditions_list = _extract_set_conditions(q)
                 
-                for set_cond in set_conditions:
-                    update_node = QueryTree(type="UPDATE", val=set_cond)
-                    
-                    if last_node:
-                        last_node.add_child(update_node)
-                    else:
-                        current_root = update_node
-                    last_node = update_node
+                set_clauses = []
+                for set_cond in set_conditions_list:
+                    if '=' in set_cond:
+                        eq_pos = set_cond.find('=')
+                        column = set_cond[:eq_pos].strip()
+                        value = set_cond[eq_pos + 1:].strip()
+                        set_clauses.append(SetClause(column, value))
                 
-                # 2. Parse WHERE conditions (optional)
+                update_node = QueryTree(type="UPDATE", val=set_clauses)
+                
+                current_root = update_node
+                last_node = update_node
+                
+                # 2. parse WHERE (optional)
                 if "WHERE" in q.upper():
-                    where_cond = _get_condition_from_where(q)
-                    where_split = where_cond.split(" AND ")
+                    where_cond_str = _get_condition_from_where(q)
+                    condition = parse_where_condition(where_cond_str)
                     
-                    # Create first SIGMA node
-                    first_sigma = QueryTree(type="SIGMA", val=where_split[0].strip())
-                    last_node.add_child(first_sigma)
+                    sigma = QueryTree(type="SIGMA", val=condition)
                     
-                    # Chain additional SIGMA nodes
-                    temp_sigma = first_sigma
-                    for cond in where_split[1:]:
-                        next_sigma = QueryTree(type="SIGMA", val=cond.strip())
-                        temp_sigma.add_child(next_sigma)
-                        temp_sigma = next_sigma
-                    
-                    last_node = temp_sigma
+                    last_node.add_child(sigma)
+                    last_node = sigma
                 
-                # 3. Parse table name
-                table_name = _extract_table_update(q)
-                table_node = QueryTree(type="TABLE", val=table_name)
+                # 3. parse table name
+                table_str = _extract_table_update(q)
+                table_ref = TableReference(table_str)
+                
+                table_node = QueryTree(type="TABLE", val=table_ref)
+                
                 last_node.add_child(table_node)
                 
                 parse_result.query_tree = current_root
-            
-            # Parse DELETE statement
+
             elif q.upper().startswith("DELETE"):
                 # Init nodes
                 current_root = None
                 last_node = None
                 
-                # 1. Create DELETE node
-                delete_node = QueryTree(type="DELETE", val="")
+                # 1. DELETE node
+                delete_node = QueryTree(type="DELETE", val=None)
                 current_root = delete_node
                 last_node = delete_node
                 
-                # 2. Parse WHERE conditions (optional)
+                # 2. parse WHERE
                 if "WHERE" in q.upper():
-                    where_cond = _get_condition_from_where(q)
-                    where_split = where_cond.split(" AND ")
+                    where_cond_str = _get_condition_from_where(q)
+                    condition = parse_where_condition(where_cond_str)
                     
-                    # Create first SIGMA node
-                    first_sigma = QueryTree(type="SIGMA", val=where_split[0].strip())
-                    last_node.add_child(first_sigma)
+                    sigma = QueryTree(type="SIGMA", val=condition)
                     
-                    # Chain additional SIGMA nodes
-                    temp_sigma = first_sigma
-                    for cond in where_split[1:]:
-                        next_sigma = QueryTree(type="SIGMA", val=cond.strip())
-                        temp_sigma.add_child(next_sigma)
-                        temp_sigma = next_sigma
-                    
-                    last_node = temp_sigma
+                    last_node.add_child(sigma)
+                    last_node = sigma
                 
-                # 3. Parse table name
-                table_name = _extract_table_delete(q)
-                table_node = QueryTree(type="TABLE", val=table_name)
+                # 3. parse table
+                table_str = _extract_table_delete(q)
+                table_ref = TableReference(table_str)
+                
+                table_node = QueryTree(type="TABLE", val=table_ref)
+                
                 last_node.add_child(table_node)
                 
                 parse_result.query_tree = current_root
             
-            # Parse INSERT statement
             elif q.upper().startswith("INSERT"):
                 # Parse components
                 table_name = _extract_table_insert(q)
                 columns = _extract_columns_insert(q)
                 values = _extract_values_insert(q)
                 
-                # Create INSERT node with format: "table_name|columns|values"
-                insert_val = f"{table_name}|{columns}|{values}"
-                insert_node = QueryTree(type="INSERT", val=insert_val)
+                columns_list = parse_insert_columns_string(columns_str)
+                values_list = parse_insert_values_string(values_str)
+                
+                insert_data = InsertData(table_name, columns_list, values_list)
+                insert_node = QueryTree(type="INSERT", val=insert_data)
                 
                 parse_result.query_tree = insert_node
             
-             # Parse DROP TABLE statement
             elif q.upper().startswith("CREATE"):
-                create_val = _parse_create_table(q)
-                create_node = QueryTree(type="CREATE_TABLE", val=create_val)
+                table_name, columns, primary_key, foreign_keys = _parse_create_table(q)
+                
+                create_data = CreateTableData(table_name, columns, primary_key, foreign_keys)
+                create_node = QueryTree(type="CREATE_TABLE", val=create_data)
+                
                 parse_result.query_tree = create_node
 
-             # Parse DROP TABLE statement
             elif q.upper().startswith("DROP"):
-                drop_val = _parse_drop_table(q)
-                drop_node = QueryTree(type="DROP_TABLE", val=drop_val)
+                table_name, is_cascade = _parse_drop_table(q)
+                
+                drop_data = DropTableData(table_name, is_cascade)
+                drop_node = QueryTree(type="DROP_TABLE", val=drop_data)
+                
                 parse_result.query_tree = drop_node
 
-            # Parse BEGIN TRANSACTION statement
             elif q.upper().startswith("BEGIN"):
-                # Masih simple node without children
-                begin_node = QueryTree(type="BEGIN_TRANSACTION", val="")
+                begin_node = QueryTree(type="BEGIN_TRANSACTION", val=None)
                 parse_result.query_tree = begin_node
             
-            # Parse COMMIT statement
             elif q.upper().startswith("COMMIT"):
-                # Masih simple node without children
-                commit_node = QueryTree(type="COMMIT", val="")
+                commit_node = QueryTree(type="COMMIT", val=None)
                 parse_result.query_tree = commit_node
             
-            # Parse ROLLBACK statement
             elif q.upper().startswith("ROLLBACK"):
-                # Masih simple node without children
-                rollback_node = QueryTree(type="ROLLBACK", val="")
+                rollback_node = QueryTree(type="ROLLBACK", val=None)
                 parse_result.query_tree = rollback_node
-                
+            
             else:
                 raise Exception(f"Unsupported query type: {q[:20]}")
         except Exception as e:
@@ -296,66 +277,85 @@ class OptimizationEngine:
         return parse_result
 
     def optimize_query(self, parsed_query: ParsedQuery) -> ParsedQuery:
+        if not parsed_query or not parsed_query.query_tree:
+            return parsed_query
+
+        # 1) START WITH ORIGINAL ROOT
         root = parsed_query.query_tree
 
-        # aturan logis
+        # 2) APPLY NON-JOIN RULES (push-down & simplify)
+        # do fixed-point iterations
+        changed = True
+        max_iter = 5
+        while changed and max_iter > 0:
+            prev = repr(root)
+            # recursive application
+            root = self._apply_non_join_rules(root)
+            changed = (repr(root) != prev)
+            max_iter -= 1
+
+        # 3) APPLY JOIN RULES (fold selection, assoc, commutative)
         root = fold_selection_with_cartesian(root)
         root = merge_selection_into_join(root)
         root = make_join_commutative(root)
         root = associate_natural_join(root)
         root = associate_theta_join(root)
 
-        # ekstrak tabel dari query tree
-        tables = list(_tables_under(root))
-        
-        # jika hanya 1 tabel atau tidak ada join, return as is
+        # 4) TABLE EXTRACTION
+        tables = list(_tables_under(root)) if root else []
         if len(tables) <= 1:
             return ParsedQuery(parsed_query.query, root)
-        
-        # generate beberapa kandidat urutan join
-        orders = _some_permutations(tables, max_count=5)
-        
-        # map kondisi join (untuk saat ini kosong, bisa diperluas)
-        join_conditions = {}
-        
-        # build join trees untuk setiap urutan
+
+        # 5) BUILD JOIN CONDITIONS FROM CURRENT TREE
+        join_conditions = self._extract_join_conditions_from_tree(root)
+
+        # 6) ORDER ENUMERATION & PLAN GENERATION
+        orders = _some_permutations(tables, max_count=10)
         plans = []
         for order in orders:
             plan = build_join_tree(order, join_conditions)
             if plan:
                 plans.append(plan)
-        
-        # jika tidak ada plan yang dihasilkan, return root asli
+
         if not plans:
             return ParsedQuery(parsed_query.query, root)
-        
-        # pilih plan terbaik berdasarkan cost
+
+        # 7) COST MODEL: PICK BEST PLAN
         stats = get_stats()
         best = choose_best(plans, stats)
 
+        # 8) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
         return ParsedQuery(parsed_query.query, best)
 
     def get_cost(self, parsed_query: ParsedQuery) -> int:
+        if not parsed_query or not parsed_query.query_tree:
+            return 0
+        
+        # TODO: ==================== [UNCOMMENT SAAT INTEGRASI SM] ====================
+        # Uncomment blok di bawah untuk menggunakan StorageManager:
+        #
+        # try:
+        #     from StorageManager import StorageManager  # sesuaikan path SM
+        #     from helper.cost import CostPlanner
+        #     
+        #     # Inisialisasi StorageManager
+        #     storage_manager = StorageManager(base_path='data')  # sesuaikan path data nya
+        #     
+        #     # Inisialisasi CostPlanner dengan SM
+        #     cost_planner = CostPlanner(storage_manager=storage_manager)
+        #     
+        #     # Return cost dari CostPlanner
+        #     return cost_planner.get_cost(parsed_query)
+        # 
+        # except ImportError:
+        #     # Fallback ke dummy stats jika SM tidak tersedia
+        #     pass
+        # ===========================================================================
+        
+        # ini nanti hapus aja setelah integrasi SM
         root = parsed_query.query_tree
         stats = get_stats()
         return plan_cost(root, stats)
-    
-    def optimize_query_non_join(self, pq: ParsedQuery) -> ParsedQuery:
-        if not pq or not pq.query_tree:
-            return pq
-        
-        root = pq.query_tree
-        # nyobain aja max iterasi 5
-        max_iterations = 5
-        for _ in range(max_iterations):
-            old_root = root
-            
-            root = self._apply_non_join_rules(root)
-            
-            if root == old_root:
-                break
-        
-        return ParsedQuery(pq.query, root)
     
     def _apply_non_join_rules(self, node: QueryTree) -> QueryTree:
         if not node:
@@ -374,3 +374,51 @@ class OptimizationEngine:
         node = push_projection_through_join_with_join_attrs(node)
         
         return node
+    
+    def _extract_join_conditions_from_tree(self, node: QueryTree) -> dict:
+        mapping = {}
+
+        def walk(n):
+            if n is None:
+                return
+
+            if n.type == "JOIN":
+                pred = ""
+
+                # coba ambil menggunakan _theta_pred
+                try:
+                    pred = _theta_pred(n)
+                except:
+                    pred = ""
+
+                # fallback
+                if not pred:
+                    if hasattr(n.val, "condition"):
+                        pred = str(n.val.condition)
+                    elif isinstance(n.val, str):
+                        s = n.val.strip()
+                        if s.upper().startswith("THETA:"):
+                            pred = s.split(":",1)[1].strip()
+                        elif s.upper() != "CARTESIAN":
+                            pred = s
+
+                if pred:
+                    left_list = list(_tables_under(n.childs[0]))
+                    right_list = list(_tables_under(n.childs[1]))
+
+                    if left_list and right_list:
+                        # pasangan utama
+                        key = frozenset({left_list[0], right_list[0]})
+                        mapping[key] = pred
+
+                        # pasangan tambahan (mencegah predicate hilang)
+                        for lt in left_list:
+                            for rt in right_list:
+                                mapping.setdefault(frozenset({lt, rt}), pred)
+
+            # recursive
+            for c in getattr(n, "childs", []):
+                walk(c)
+
+        walk(node)
+        return mapping

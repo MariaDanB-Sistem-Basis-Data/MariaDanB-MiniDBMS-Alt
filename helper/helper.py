@@ -1,29 +1,76 @@
-from model.query_tree import QueryTree
+from model.query_tree import (
+    QueryTree, 
+    ConditionNode, 
+    LogicalNode, 
+    ColumnNode, 
+    OrderByItem,
+    SetClause,
+    ColumnDefinition,
+    ForeignKeyDefinition,
+    TableReference,
+    NaturalJoin,
+    ThetaJoin
+)
 import re
 
 # util kecil
 def _is_cartesian(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and (join_node.val == "" or join_node.val.upper() == "CARTESIAN")
+    if join_node.type != "JOIN":
+        return False
+    if join_node.val is None or join_node.val == "":
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper() == "CARTESIAN":
+        return True
+    return False
 
 def _is_theta(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and join_node.val.upper().startswith("THETA:")
+    if join_node.type != "JOIN":
+        return False
+    if isinstance(join_node.val, ThetaJoin):
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper().startswith("THETA:"):
+        return True
+    return False
 
 def _is_natural(join_node: QueryTree) -> bool:
-    return join_node.type == "JOIN" and join_node.val.upper() == "NATURAL"
+    if join_node.type != "JOIN":
+        return False
+    if isinstance(join_node.val, NaturalJoin):
+        return True
+    if isinstance(join_node.val, str) and join_node.val.upper() == "NATURAL":
+        return True
+    return False
 
 def _theta_pred(join_node: QueryTree) -> str:
-    if not _is_theta(join_node): return ""
+    if not _is_theta(join_node):
+        return ""
+    if isinstance(join_node.val, ThetaJoin):
+        # return string representation of condition
+        return str(join_node.val.condition)
     return join_node.val.split(":", 1)[1].strip()
 
 def _mk_theta(pred: str) -> str:
     return f"THETA:{pred.strip()}"
+
+def _find_node(tree: QueryTree, node_type: str):
+    """Find first node of given type in query tree"""
+    if tree.type == node_type:
+        return tree
+    for child in tree.childs:
+        result = _find_node(child, node_type)
+        if result:
+            return result
+    return None
 
 def _tables_under(node: QueryTree):
     """Extract all table names from a query tree"""
     out = []
     def dfs(n):
         if n.type == "TABLE":
-            out.append(n.val)
+            if isinstance(n.val, TableReference):
+                out.append(n.val.name)
+            else:
+                out.append(n.val)
         for c in n.childs:
             dfs(c)
     dfs(node)
@@ -116,6 +163,8 @@ def plan_cost(node: QueryTree, stats: dict) -> int:
        (mengarah ke left-deep yang memanfaatkan tabel kecil/seleksi awal)"""
     if node.type == "TABLE":
         t = node.val
+        if isinstance(t, TableReference):
+            t = t.name
         return stats.get(t, {}).get("b_r", 1000)
 
     if node.type == "SIGMA":
@@ -127,7 +176,10 @@ def plan_cost(node: QueryTree, stats: dict) -> int:
         cr = plan_cost(R, stats)
         def rows(n):
             if n.type == "TABLE":
-                return stats.get(n.val, {}).get("n_r", 1000)
+                t = n.val
+                if isinstance(t, TableReference):
+                    t = t.name
+                return stats.get(t, {}).get("n_r", 1000)
             if n.type == "JOIN":
                 return max(rows(n.childs[0]), rows(n.childs[1]))
             if n.type == "SIGMA":
@@ -135,7 +187,10 @@ def plan_cost(node: QueryTree, stats: dict) -> int:
             return 1000
         def blocks(n):
             if n.type == "TABLE":
-                return stats.get(n.val, {}).get("b_r", 100)
+                t = n.val
+                if isinstance(t, TableReference):
+                    t = t.name
+                return stats.get(t, {}).get("b_r", 100)
             if n.type == "JOIN":
                 return blocks(n.childs[0]) + blocks(n.childs[1])
             if n.type == "SIGMA":
@@ -157,31 +212,61 @@ def choose_best(plans, stats: dict) -> QueryTree:
     return best
 
 def build_join_tree(order, join_conditions: dict = None) -> QueryTree:
-    """order: ['A','B','C']
-       join_conditions: {frozenset({'A','B'}): 'A.x=B.y', ...}
-       Buat left-deep: (((A ⋈ B) ⋈ C) ...)
-       Gunakan THETA jika ada predicate, selain itu CARTESIAN."""
     if join_conditions is None:
         join_conditions = {}
-    
+
     if not order:
         return None
-    
+
     cur = QueryTree("TABLE", order[0])
     for i in range(1, len(order)):
         name = order[i]
         right = QueryTree("TABLE", name)
-        # cari predicate join
-        key = frozenset({order[0], name})
+
+        # find representative table name for left subtree
+        try:
+            cur_table = _first_table(cur)
+        except Exception:
+            cur_table = order[0]
+
+        next_table = name
+
+        # direct key lookup
+        key = frozenset({cur_table, next_table})
         pred = join_conditions.get(key, "")
+
+        # if not found, try any table in left subtree paired with next_table
+        if not pred:
+            left_tables = list(_tables_under(cur))
+            for lt in left_tables:
+                k2 = frozenset({lt, next_table})
+                if k2 in join_conditions:
+                    pred = join_conditions[k2]
+                    break
+
+        # if still not found, try symmetrical: any table in right subtree vs any in left
+        if not pred:
+            for jt_key in join_conditions.keys():
+                try:
+                    if isinstance(jt_key, (set, frozenset)) and next_table in jt_key:
+                        if any(lt in jt_key for lt in list(_tables_under(cur))):
+                            pred = join_conditions[jt_key]
+                            break
+                except Exception:
+                    continue
+
         val = _mk_theta(pred) if pred else "CARTESIAN"
         cur = QueryTree("JOIN", val, [cur, right])
         cur.childs[0].parent = cur
         right.parent = cur
+
     return cur
 
 def _first_table(node: QueryTree) -> str:
-    if node.type == "TABLE": return node.val
+    if node.type == "TABLE": 
+        if isinstance(node.val, TableReference):
+            return node.val.name
+        return node.val
     return _first_table(node.childs[0])
 
 # Pipeline: dari ParsedQuery → best join plan
@@ -220,143 +305,160 @@ def _some_permutations(items, max_count=5):
     return res if res else [items]
 
 
-# Aturan 1: Operasi seleksi konjungtif dapat diuraikan menjadi urutan seleksi
+# aturan 1: operasi seleksi konjunktif dapat diuraikan menjadi urutan seleksi
 # σ₁∧₂(E) = σ₁(σ₂(E))
-def decompose_conjunctive_selection(node: QueryTree) -> QueryTree:
-    if node.type != "SIGMA" or not node.val:
-        return node
+def decompose_conjunctive_selection(tree: QueryTree) -> QueryTree:
+    sigma_node = _find_node(tree, "SIGMA")
+    if not sigma_node or sigma_node.val is None:
+        return tree
     
-    if " AND " in node.val.upper():
-        conditions = re.split(r'\s+AND\s+', node.val, flags=re.IGNORECASE)
-        
-        current = node.childs[0] if node.childs else None
-        
-        for cond in reversed(conditions):
-            sigma = QueryTree("SIGMA", cond.strip())
-            if current:
-                sigma.add_child(current)
-            current = sigma
-        
-        if node.parent:
-            node.parent.replace_child(node, current)
-            current.parent = node.parent
-        else:
-            current.parent = None
-        
+    # hanya proses jika val adalah LogicalNode dengan AND
+    if not isinstance(sigma_node.val, LogicalNode) or sigma_node.val.operator != "AND":
+        return tree
+    
+    conditions = sigma_node.val.childs
+    
+    current = sigma_node.childs[0] if sigma_node.childs else None
+    
+    for cond in reversed(conditions):
+        sigma = QueryTree("SIGMA", cond)
+        if current:
+            sigma.add_child(current)
+        current = sigma
+    
+    if sigma_node.parent:
+        sigma_node.parent.replace_child(sigma_node, current)
+        current.parent = sigma_node.parent
+        return tree
+    else:
+        current.parent = None
         return current
-    return node
 
-# Aturan 2: Operasi seleksi bersifat komutatif
+# aturan 2: operasi seleksi bersifat komutatif
 # σ₁(σ₂(E)) = σ₂(σ₁(E))
-def swap_selection_order(node: QueryTree) -> QueryTree:
-    if node.type == "SIGMA" and node.childs and node.childs[0].type == "SIGMA":
-        sigma1_val = node.val
-        sigma2 = node.childs[0]
-        sigma2_val = sigma2.val
-        child_of_sigma2 = sigma2.childs[0] if sigma2.childs else None
-        
-        new_sigma1 = QueryTree("SIGMA", sigma1_val)
-        if child_of_sigma2:
-            new_sigma1.add_child(child_of_sigma2)
-        
-        new_sigma2 = QueryTree("SIGMA", sigma2_val)
-        new_sigma2.add_child(new_sigma1)
-
-        if node.parent:
-            node.parent.replace_child(node, new_sigma2)
-            new_sigma2.parent = node.parent
-        else:
-            new_sigma2.parent = None
-        
-        return new_sigma2
+def swap_selection_order(tree: QueryTree) -> QueryTree:
+    sigma1 = _find_node(tree, "SIGMA")
+    if not sigma1 or not sigma1.childs or sigma1.childs[0].type != "SIGMA":
+        return tree
     
-    return node
+    # sigma1 adalah outer SIGMA dengan nilai θ1
+    # sigma2 adalah inner SIGMA dengan nilai θ2
+    # Struktur awal: σ₁(σ₂(E))
+    # Hasil: σ₂(σ₁(E))
+    
+    sigma1_val = sigma1.val  # θ1
+    sigma2 = sigma1.childs[0]
+    sigma2_val = sigma2.val  # θ2
+    child_of_sigma2 = sigma2.childs[0] if sigma2.childs else None  # E
+    
+    # Buat struktur baru: σ₂(σ₁(E))
+    # Inner sigma: σ₁(E)
+    new_inner_sigma = QueryTree("SIGMA", sigma1_val)
+    if child_of_sigma2:
+        new_inner_sigma.add_child(child_of_sigma2)
+    
+    # Outer sigma: σ₂(σ₁(E))
+    new_outer_sigma = QueryTree("SIGMA", sigma2_val)
+    new_outer_sigma.add_child(new_inner_sigma)
 
-# Aturan 3: Hanya proyeksi terakhir dalam urutan proyeksi yang diperlukan
+    if sigma1.parent:
+        sigma1.parent.replace_child(sigma1, new_outer_sigma)
+        new_outer_sigma.parent = sigma1.parent
+        return tree
+    else:
+        new_outer_sigma.parent = None
+        return new_outer_sigma
+
+# aturan 3: hanya proyeksi terakhir dalam urutan proyeksi yang diperlukan
 # ΠL₁(ΠL₂(...ΠLn(E))) = ΠL₁(E)
-def eliminate_redundant_projections(node: QueryTree) -> QueryTree:
-    if node.type == "PROJECT" and node.childs and node.childs[0].type == "PROJECT":
-        current = node.childs[0]
-        
-        while current.childs and current.childs[0].type == "PROJECT":
-            current = current.childs[0]
-        
-        if current.childs:
-            node.childs = [current.childs[0]]
-            current.childs[0].parent = node
-        
-        return node
+def eliminate_redundant_projections(tree: QueryTree) -> QueryTree:
+    proj_node = _find_node(tree, "PROJECT")
+    if not proj_node or not proj_node.childs or proj_node.childs[0].type != "PROJECT":
+        return tree
     
-    return node
+    current = proj_node.childs[0]
+    
+    while current.childs and current.childs[0].type == "PROJECT":
+        current = current.childs[0]
+    
+    if current.childs:
+        proj_node.childs = [current.childs[0]]
+        current.childs[0].parent = proj_node
+    
+    return tree
 
-# Aturan 4a: Distribusi seleksi terhadap join (kondisi hanya untuk satu tabel)
+# aturan 4a: distribusi seleksi terhadap join (kondisi hanya untuk satu tabel)
 # σθ₀(E₁⋈E₂) = (σθ₀(E₁)) ⋈ E₂
-# WIP ini, masih bingung cara ambil atribut mana punya tabel siapa
-def push_selection_through_join_single(node: QueryTree) -> QueryTree:
-    if node.type != "SIGMA" or not node.childs or node.childs[0].type != "JOIN":
-        return node
+def push_selection_through_join_single(tree: QueryTree) -> QueryTree:
+    sigma_node = _find_node(tree, "SIGMA")
+    if not sigma_node or not sigma_node.childs or sigma_node.childs[0].type != "JOIN":
+        return tree
     
-    join_node = node.childs[0]
+    # hanya proses jika val adalah ConditionNode (bukan LogicalNode)
+    if not isinstance(sigma_node.val, ConditionNode):
+        return tree
+    
+    join_node = sigma_node.childs[0]
     if len(join_node.childs) < 2:
-        return node
+        return tree
     
     left_table = join_node.childs[0]
     right_table = join_node.childs[1]
     
-
-    #masih kayak gini
     left_tables = _tables_under(left_table)
     right_tables = _tables_under(right_table)
-    condition = node.val
-    belongs_to_left = any(table in condition for table in left_tables)
-    belongs_to_right = any(table in condition for table in right_tables)
+    
+    cond_tables = _get_tables_from_condition(sigma_node.val)
+    
+    belongs_to_left = cond_tables.issubset(left_tables) if cond_tables else False
+    belongs_to_right = cond_tables.issubset(right_tables) if cond_tables else False
     
     if belongs_to_left and not belongs_to_right:
-        sigma_left = QueryTree("SIGMA", condition)
+        sigma_left = QueryTree("SIGMA", sigma_node.val)
         sigma_left.add_child(left_table)
         
         join_node.childs[0] = sigma_left
         sigma_left.parent = join_node
         
-
-        if node.parent:
-            node.parent.replace_child(node, join_node)
-            join_node.parent = node.parent
+        if sigma_node.parent:
+            sigma_node.parent.replace_child(sigma_node, join_node)
+            join_node.parent = sigma_node.parent
+            return tree
         else:
             join_node.parent = None
-        
-        return join_node
+            return join_node
     
     elif belongs_to_right and not belongs_to_left:
-        sigma_right = QueryTree("SIGMA", condition)
+        sigma_right = QueryTree("SIGMA", sigma_node.val)
         sigma_right.add_child(right_table)
         
         join_node.childs[1] = sigma_right
         sigma_right.parent = join_node
         
-        if node.parent:
-            node.parent.replace_child(node, join_node)
-            join_node.parent = node.parent
+        if sigma_node.parent:
+            sigma_node.parent.replace_child(sigma_node, join_node)
+            join_node.parent = sigma_node.parent
+            return tree
         else:
             join_node.parent = None
-        
-        return join_node
+            return join_node
     
-    return node
+    return tree
 
-# Aturan 4b: Distribusi seleksi terhadap join (kondisi untuk kedua tabel)
+# aturan 4b: distribusi seleksi terhadap join (kondisi untuk kedua tabel)
 # σ(θ₁∧θ₂)(E₁⋈E₂) = (σθ₁(E₁)) ⋈ (σθ₂(E₂))
-# sama masih WIP
-def push_selection_through_join_split(node: QueryTree) -> QueryTree:
-    if node.type != "SIGMA" or not node.childs or node.childs[0].type != "JOIN":
-        return node
+def push_selection_through_join_split(tree: QueryTree) -> QueryTree:
+    sigma_node = _find_node(tree, "SIGMA")
+    if not sigma_node or not sigma_node.childs or sigma_node.childs[0].type != "JOIN":
+        return tree
     
-    if " AND " not in node.val.upper():
-        return node
+    # hanya proses jika val adalah LogicalNode dengan AND
+    if not isinstance(sigma_node.val, LogicalNode) or sigma_node.val.operator != "AND":
+        return tree
     
-    join_node = node.childs[0]
+    join_node = sigma_node.childs[0]
     if len(join_node.childs) < 2:
-        return node
+        return tree
     
     left_table = join_node.childs[0]
     right_table = join_node.childs[1]
@@ -364,127 +466,145 @@ def push_selection_through_join_split(node: QueryTree) -> QueryTree:
     left_tables = _tables_under(left_table)
     right_tables = _tables_under(right_table)
     
-    conditions = re.split(r'\s+AND\s+', node.val, flags=re.IGNORECASE)
-    
     left_conditions = []
     right_conditions = []
     mixed_conditions = []
     
-    for cond in conditions:
-        belongs_to_left = any(table in cond for table in left_tables)
-        belongs_to_right = any(table in cond for table in right_tables)
+    for cond in sigma_node.val.childs:
+        cond_tables = _get_tables_from_condition(cond)
+        
+        belongs_to_left = cond_tables.issubset(left_tables) if cond_tables else False
+        belongs_to_right = cond_tables.issubset(right_tables) if cond_tables else False
         
         if belongs_to_left and not belongs_to_right:
-            left_conditions.append(cond.strip())
+            left_conditions.append(cond)
         elif belongs_to_right and not belongs_to_left:
-            right_conditions.append(cond.strip())
+            right_conditions.append(cond)
         else:
-            mixed_conditions.append(cond.strip())
+            mixed_conditions.append(cond)
     
     if left_conditions or right_conditions:
         if left_conditions:
-            left_cond = " AND ".join(left_conditions)
+            if len(left_conditions) == 1:
+                left_cond = left_conditions[0]
+            else:
+                left_cond = LogicalNode("AND", left_conditions)
             sigma_left = QueryTree("SIGMA", left_cond)
             sigma_left.add_child(left_table)
             join_node.childs[0] = sigma_left
             sigma_left.parent = join_node
         
         if right_conditions:
-            right_cond = " AND ".join(right_conditions)
+            if len(right_conditions) == 1:
+                right_cond = right_conditions[0]
+            else:
+                right_cond = LogicalNode("AND", right_conditions)
             sigma_right = QueryTree("SIGMA", right_cond)
             sigma_right.add_child(right_table)
             join_node.childs[1] = sigma_right
             sigma_right.parent = join_node
         
         if mixed_conditions:
-            node.val = " AND ".join(mixed_conditions)
-            return node
+            if len(mixed_conditions) == 1:
+                sigma_node.val = mixed_conditions[0]
+            else:
+                sigma_node.val = LogicalNode("AND", mixed_conditions)
+            return tree
         else:
-            if node.parent:
-                node.parent.replace_child(node, join_node)
-                join_node.parent = node.parent
+            if sigma_node.parent:
+                sigma_node.parent.replace_child(sigma_node, join_node)
+                join_node.parent = sigma_node.parent
+                return tree
             else:
                 join_node.parent = None
-            return join_node
+                return join_node
     
-    return node
+    return tree
 
-# Aturan 5a: Distribusi proyeksi terhadap join (simple case)
+# aturan 5a: distribusi proyeksi terhadap join (simple case)
 # ΠL₁∪L₂(E₁⋈E₂) = (ΠL₁(E₁)) ⋈ (ΠL₂(E₂))
-def push_projection_through_join_simple(node: QueryTree) -> QueryTree:
-    if node.type != "PROJECT" or not node.childs or node.childs[0].type != "JOIN":
-        return node
+def push_projection_through_join_simple(tree: QueryTree) -> QueryTree:
+    proj_node = _find_node(tree, "PROJECT")
+    if not proj_node or not proj_node.childs or proj_node.childs[0].type != "JOIN":
+        return tree
     
-    join_node = node.childs[0]
+    # hanya proses jika val adalah list of ColumnNode
+    if not isinstance(proj_node.val, list) or proj_node.val == "*":
+        return tree
+    
+    join_node = proj_node.childs[0]
     if len(join_node.childs) < 2:
-        return node
+        return tree
     
     left_table = join_node.childs[0]
     right_table = join_node.childs[1]
     
     left_tables = _tables_under(left_table)
     right_tables = _tables_under(right_table)
-    
-    proj_cols = [c.strip() for c in node.val.split(",")]
     
     left_cols = []
     right_cols = []
+    unassigned_cols = []
     
-    for col in proj_cols:
-        belongs_to_left = any(table in col for table in left_tables)
-        belongs_to_right = any(table in col for table in right_tables)
+    for col in proj_node.val:
+        if not isinstance(col, ColumnNode):
+            continue
         
-        if belongs_to_left:
-            left_cols.append(col)
-        if belongs_to_right:
-            right_cols.append(col)
+        if col.table:
+            if col.table in left_tables:
+                left_cols.append(col)
+            elif col.table in right_tables:
+                right_cols.append(col)
+            else:
+                unassigned_cols.append(col)
+        else:
+            unassigned_cols.append(col)
     
-    if left_cols and right_cols:
-        if left_cols:
-            left_proj = QueryTree("PROJECT", ", ".join(left_cols))
-            left_proj.add_child(left_table)
-            join_node.childs[0] = left_proj
-            left_proj.parent = join_node
+    if left_cols and right_cols and not unassigned_cols:
+        left_proj = QueryTree("PROJECT", left_cols)
+        left_proj.add_child(left_table)
+        join_node.childs[0] = left_proj
+        left_proj.parent = join_node
         
-        if right_cols:
-            right_proj = QueryTree("PROJECT", ", ".join(right_cols))
-            right_proj.add_child(right_table)
-            join_node.childs[1] = right_proj
-            right_proj.parent = join_node
+        right_proj = QueryTree("PROJECT", right_cols)
+        right_proj.add_child(right_table)
+        join_node.childs[1] = right_proj
+        right_proj.parent = join_node
         
-        if node.parent:
-            node.parent.replace_child(node, join_node)
-            join_node.parent = node.parent
+        if proj_node.parent:
+            proj_node.parent.replace_child(proj_node, join_node)
+            join_node.parent = proj_node.parent
+            return tree
         else:
             join_node.parent = None
-        
-        return join_node
+            return join_node
     
-    return node
+    return tree
 
-# Aturan 5b: Distribusi proyeksi terhadap join (dengan atribut join)
+# aturan 5b: distribusi proyeksi terhadap join (dengan atribut join)
 # ΠL₁∪L₂(E₁⋈θE₂) = ΠL₁∪L₂((ΠL₁∪L₃(E₁)) ⋈θ (ΠL₂∪L₄(E₂)))
-def push_projection_through_join_with_join_attrs(node: QueryTree) -> QueryTree:
-    if node.type != "PROJECT" or not node.childs or node.childs[0].type != "JOIN":
-        return node
+def push_projection_through_join_with_join_attrs(tree: QueryTree) -> QueryTree:
+    proj_node = _find_node(tree, "PROJECT")
+    if not proj_node or not proj_node.childs or proj_node.childs[0].type != "JOIN":
+        return tree
     
-    join_node = node.childs[0]
+    # hanya proses jika val adalah list of ColumnNode
+    if not isinstance(proj_node.val, list) or proj_node.val == "*":
+        return tree
+    
+    join_node = proj_node.childs[0]
     if len(join_node.childs) < 2:
-        return node
+        return tree
     
     if not _is_theta(join_node):
-        return node
+        return tree
     
     left_table = join_node.childs[0]
     right_table = join_node.childs[1]
     
-
     left_tables = _tables_under(left_table)
     right_tables = _tables_under(right_table)
     
-    proj_cols = [c.strip() for c in node.val.split(",")]
-    
-
     theta_condition = _theta_pred(join_node)
     join_attrs = _extract_attributes_from_condition(theta_condition)
     
@@ -493,46 +613,48 @@ def push_projection_through_join_with_join_attrs(node: QueryTree) -> QueryTree:
     left_join_attrs = []
     right_join_attrs = []
     
-    for col in proj_cols:
-        belongs_to_left = any(table in col for table in left_tables)
-        belongs_to_right = any(table in col for table in right_tables)
+    for col in proj_node.val:
+        if not isinstance(col, ColumnNode):
+            continue
         
-        if belongs_to_left:
-            left_cols.append(col)
-        if belongs_to_right:
-            right_cols.append(col)
+        if col.table:
+            if col.table in left_tables:
+                left_cols.append(col)
+            elif col.table in right_tables:
+                right_cols.append(col)
     
     for attr in join_attrs:
-        belongs_to_left = any(table in attr for table in left_tables)
-        belongs_to_right = any(table in attr for table in right_tables)
-        
-        if belongs_to_left and attr not in left_cols:
-            left_join_attrs.append(attr)
-        if belongs_to_right and attr not in right_cols:
-            right_join_attrs.append(attr)
+        if '.' in attr:
+            table, column = attr.split('.', 1)
+            col_node = ColumnNode(column, table)
+            
+            if table in left_tables:
+                if not any(c.column == column and c.table == table for c in left_cols):
+                    left_join_attrs.append(col_node)
+            elif table in right_tables:
+                if not any(c.column == column and c.table == table for c in right_cols):
+                    right_join_attrs.append(col_node)
     
     if left_cols or right_cols:
-        # Left projection
         left_all = left_cols + left_join_attrs
         if left_all:
-            left_proj = QueryTree("PROJECT", ", ".join(left_all))
+            left_proj = QueryTree("PROJECT", left_all)
             left_proj.add_child(left_table)
             join_node.childs[0] = left_proj
             left_proj.parent = join_node
         
-        # Right projection
         right_all = right_cols + right_join_attrs
         if right_all:
-            right_proj = QueryTree("PROJECT", ", ".join(right_all))
+            right_proj = QueryTree("PROJECT", right_all)
             right_proj.add_child(right_table)
             join_node.childs[1] = right_proj
             right_proj.parent = join_node
         
-        return node
+        return tree
     
-    return node
+    return tree
 
-# HELPER SEMENTARA
+# helper untuk extract atribut dari string kondisi
 def _extract_attributes_from_condition(condition: str) -> list:
     if not condition:
         return []
@@ -541,11 +663,31 @@ def _extract_attributes_from_condition(condition: str) -> list:
     matches = re.findall(pattern, condition)
     return matches
 
-def validate_query(query: str) -> tuple:
+# helper untuk extract tables dari condition node
+def _get_tables_from_condition(cond) -> set:
+    tables = set()
+    
+    if isinstance(cond, ConditionNode):
+        if isinstance(cond.attr, dict) and cond.attr.get('table'):
+            tables.add(cond.attr['table'])
+        elif isinstance(cond.attr, ColumnNode) and cond.attr.table:
+            tables.add(cond.attr.table)
+        
+        if isinstance(cond.value, dict) and cond.value.get('table'):
+            tables.add(cond.value['table'])
+        elif isinstance(cond.value, ColumnNode) and cond.value.table:
+            tables.add(cond.value.table)
+    
+    elif isinstance(cond, LogicalNode):
+        for child in cond.childs:
+            tables.update(_get_tables_from_condition(child))
+    
+    return tables
 
+def validate_query(query: str) -> tuple:
+    # validasi sintaks query sql
     query = query.strip()
     
-    # Check semicolon
     if not query.endswith(";"):
         return False, "Query must end with a semicolon."
     
@@ -553,8 +695,6 @@ def validate_query(query: str) -> tuple:
     if not q_clean:
         return False, "Query is empty."
     
-    
-    # SELECT pattern 
     select_pattern = re.compile(
         r'^\s*SELECT\s+.+?\s+FROM\s+.+?' 
         r'(\s+JOIN\s+.+?\s+ON\s+.+?)?'
@@ -567,7 +707,6 @@ def validate_query(query: str) -> tuple:
         re.IGNORECASE | re.DOTALL
     )
     
-    # Other query patterns
     other_patterns = {
         "UPDATE": re.compile(
             r'^\s*UPDATE\s+\w+\s+SET\s+.+?(\s+WHERE\s+.+?)?\s*;$',
@@ -603,18 +742,14 @@ def validate_query(query: str) -> tuple:
         )
     }
     
-    # Detect query type
     query_type = q_clean.split(maxsplit=1)[0].upper()
     
-    # Validate SELECT query
     if query_type == "SELECT":
         if select_pattern.match(query):
-            # Check clause order
             clause_order = ["WHERE", "GROUP BY", "ORDER BY", "LIMIT"]
             last_seen_index = -1
             
             for clause in clause_order:
-                # Handle multi-word clauses
                 if clause == "GROUP BY":
                     clause_pos = query.upper().find("GROUP BY")
                 elif clause == "ORDER BY":
@@ -631,7 +766,6 @@ def validate_query(query: str) -> tuple:
         else:
             return False, "Invalid SELECT query syntax."
     
-    # Validate other query types
     if query_type in other_patterns:
         if other_patterns[query_type].match(query):
             return True, f"Valid {query_type} query."
@@ -640,7 +774,8 @@ def validate_query(query: str) -> tuple:
     
     return False, f"Unsupported query type: {query_type}"
 
-# SELECT Helpers
+
+# helper untuk extract columns dari SELECT clause
 def _get_columns_from_select(query: str) -> str:
     q_upper = query.upper()
     select_idx = q_upper.find("SELECT") + 6
@@ -653,11 +788,11 @@ def _get_columns_from_select(query: str) -> str:
     
     return columns
 
+# helper untuk extract table dari FROM clause
 def _get_from_table(query: str) -> str:
     q_upper = query.upper()
     from_idx = q_upper.find("FROM") + 4
     
-    # Find next keyword
     end_keywords = ["WHERE", "GROUP BY", "ORDER BY", "LIMIT"]
     end_idx = len(query)
     
@@ -674,6 +809,7 @@ def _get_from_table(query: str) -> str:
     
     return query[from_idx:end_idx].strip()
 
+# helper untuk extract condition dari WHERE clause
 def _get_condition_from_where(query: str) -> str:
     q_upper = query.upper()
     where_idx = q_upper.find("WHERE")
@@ -681,9 +817,8 @@ def _get_condition_from_where(query: str) -> str:
     if where_idx == -1:
         return ""
     
-    where_idx += 5  # len("WHERE")
+    where_idx += 5
     
-    # Find next keyword
     end_keywords = ["GROUP BY", "ORDER BY", "LIMIT"]
     end_idx = len(query)
     
@@ -700,6 +835,7 @@ def _get_condition_from_where(query: str) -> str:
     
     return query[where_idx:end_idx].strip()
 
+# helper untuk extract limit value
 def _get_limit(query: str) -> int:
     q_upper = query.upper()
     limit_idx = q_upper.find("LIMIT") + 5
@@ -707,11 +843,11 @@ def _get_limit(query: str) -> int:
     limit_str = query[limit_idx:].strip().split()[0]
     return int(limit_str)
 
-def _get_info_from_order_by(query: str) -> str: # new: ASC and DESC
+# helper untuk extract order by info
+def _get_order_by_info(query: str) -> str:
     q_upper = query.upper()
     order_idx = q_upper.find("ORDER BY") + 8
     
-    # Find next keyword
     end_keywords = ["LIMIT"]
     end_idx = len(query)
     
@@ -723,20 +859,18 @@ def _get_info_from_order_by(query: str) -> str: # new: ASC and DESC
     
     order_clause = query[order_idx:end_idx].strip()
     
-    # Check for DESC/ASC
     if "DESC" in order_clause.upper():
         return order_clause
     elif "ASC" in order_clause.upper():
         return order_clause
     else:
-        # Default to ASC
         return f"{order_clause} ASC"
 
+# helper untuk extract group by column
 def _get_column_from_group_by(query: str) -> str:
     q_upper = query.upper()
     group_idx = q_upper.find("GROUP BY") + 8
     
-    # Find next keyword
     end_keywords = ["ORDER BY", "LIMIT"]
     end_idx = len(query)
     
@@ -752,63 +886,58 @@ def _get_column_from_group_by(query: str) -> str:
     
     return query[group_idx:end_idx].strip()
 
+# parse from clause dan return query tree node
 def _parse_from_clause(query: str) -> QueryTree:
     from_tables = _get_from_table(query)
     q_upper = from_tables.upper()
     
-    # Case 1: NATURAL JOIN
+    # case 1: NATURAL JOIN
     if "NATURAL JOIN" in q_upper:
         join_split = re.split(r'\s+NATURAL\s+JOIN\s+', from_tables, flags=re.IGNORECASE)
         
-        # Parse first table (may have alias)
         left_table = _parse_table_with_alias(join_split[0].strip())
         
-        # Chain NATURAL JOIN nodes
         for right_table_str in join_split[1:]:
             right_table = _parse_table_with_alias(right_table_str.strip())
             
-            join_node = QueryTree(type="JOIN", val="NATURAL")
+            join_node = QueryTree(type="JOIN", val=NaturalJoin())
             join_node.add_child(left_table)
             join_node.add_child(right_table)
             left_table = join_node
         
         return left_table
     
-    # Case 2: Regular JOIN with ON
+    # case 2: regular JOIN with ON
     elif "JOIN" in q_upper and "ON" in q_upper:
         join_split = re.split(r'\s+JOIN\s+', from_tables, flags=re.IGNORECASE)
         
-        # Parse first table (may have alias)
         left_table = _parse_table_with_alias(join_split[0].strip())
         
-        # Process each JOIN
         for join_part in join_split[1:]:
             temp = re.split(r'\s+ON\s+', join_part, flags=re.IGNORECASE)
             right_table_str = temp[0].strip()
-            join_condition = temp[1].strip() if len(temp) > 1 else ""
+            join_condition_str = temp[1].strip() if len(temp) > 1 else ""
             
-            # Parse right table (may have alias)
             right_table = _parse_table_with_alias(right_table_str)
             
-            # Clean condition
-            join_condition = join_condition.replace("(", "").replace(")", "")
+            join_condition_str = join_condition_str.replace("(", "").replace(")", "")
             
-            # Create JOIN node with THETA format
-            join_node = QueryTree(type="JOIN", val=f"THETA:{join_condition}")
+            # parse join condition to ConditionNode
+            join_cond = _parse_single_condition(join_condition_str)
+            
+            join_node = QueryTree(type="JOIN", val=ThetaJoin(join_cond))
             join_node.add_child(left_table)
             join_node.add_child(right_table)
             left_table = join_node
         
         return left_table
     
-    # Case 3: Comma-separated tables (Cartesian product)
+    # case 3: comma-separated tables (cartesian product)
     elif "," in from_tables:
         tables = [t.strip() for t in from_tables.split(",")]
         
-        # Parse first table (may have alias)
         left_table = _parse_table_with_alias(tables[0])
         
-        # Chain CARTESIAN JOIN nodes
         for table_str in tables[1:]:
             right_table = _parse_table_with_alias(table_str)
             
@@ -819,23 +948,23 @@ def _parse_from_clause(query: str) -> QueryTree:
         
         return left_table
     
-    # Case 4: Single table (may have alias)
+    # case 4: single table
     else:
         return _parse_table_with_alias(from_tables.strip())
 
-def _parse_table_with_alias (table_str: str) -> QueryTree:
-    # Check for AS keyword
+# parse table string dengan optional alias dan return TABLE node
+def _parse_table_with_alias(table_str: str) -> QueryTree:
     if " AS " in table_str.upper():
         parts = re.split(r'\s+AS\s+', table_str, flags=re.IGNORECASE)
         table_name = parts[0].strip()
         alias = parts[1].strip()
-        # Store as "table_name AS alias"
-        return QueryTree(type="TABLE", val=f"{table_name} AS {alias}")
+        table_ref = TableReference(table_name, alias)
+        return QueryTree(type="TABLE", val=table_ref)
     else:
-        # No alias, just table name
-        return QueryTree(type="TABLE", val=table_str)
+        table_ref = TableReference(table_str)
+        return QueryTree(type="TABLE", val=table_ref)
 
-## UPDATE Helpers
+# helper untuk extract SET conditions dari UPDATE
 def _extract_set_conditions(query: str) -> list:
     q_upper = query.upper()
     set_idx = q_upper.find("SET") + 3
@@ -846,10 +975,10 @@ def _extract_set_conditions(query: str) -> list:
     else:
         set_part = query[set_idx:where_idx].strip()
     
-    # Split by comma
     conditions = [c.strip() for c in set_part.split(",")]
     return conditions
 
+# helper untuk extract table name dari UPDATE
 def _extract_table_update(query: str) -> str:
     q_upper = query.upper()
     update_idx = q_upper.find("UPDATE") + 6
@@ -857,7 +986,7 @@ def _extract_table_update(query: str) -> str:
     
     return query[update_idx:set_idx].strip()
 
-## DELETE Helpers
+# helper untuk extract table name dari DELETE
 def _extract_table_delete(query: str) -> str:
     q_upper = query.upper()
     from_idx = q_upper.find("FROM") + 4
@@ -868,24 +997,24 @@ def _extract_table_delete(query: str) -> str:
     else:
         return query[from_idx:where_idx].strip()
 
-## INSERT Helpers
+# helper untuk extract table name dari INSERT
 def _extract_table_insert(query: str) -> str:
     q_upper = query.upper()
     into_idx = q_upper.find("INTO") + 4
     
-    # Find opening parenthesis for columns
     paren_idx = query.find("(", into_idx)
     
     return query[into_idx:paren_idx].strip()
 
+# helper untuk extract columns dari INSERT
 def _extract_columns_insert(query: str) -> str:
-    # Find first parenthesis (columns)
     start_idx = query.find("(")
     end_idx = query.find(")", start_idx)
     
-    columns = query[start_idx:end_idx+1]  # Include parentheses
+    columns = query[start_idx+1:end_idx]
     return columns
 
+# helper untuk extract values dari INSERT
 def _extract_values_insert(query: str) -> str:
     q_upper = query.upper()
     values_idx = q_upper.find("VALUES")
@@ -893,69 +1022,20 @@ def _extract_values_insert(query: str) -> str:
     if values_idx == -1:
         raise Exception("INSERT query must contain VALUES clause")
     
-    # Find parenthesis after VALUES
     start_idx = query.find("(", values_idx)
     end_idx = query.find(")", start_idx)
     
-    values = query[start_idx:end_idx+1]  # Include parentheses
+    values = query[start_idx+1:end_idx]
     return values
 
-def _get_column_from_order_by(query: str) -> str:
-    q_upper = query.upper()
-    order_idx = q_upper.find("ORDER BY") + 8
-    
-    end_keywords = ["LIMIT"]
-    end_idx = len(query)
-    
-    for keyword in end_keywords:
-        idx = q_upper.find(keyword, order_idx)
-        if idx != -1:
-            end_idx = idx
-            break
-    
-    order_clause = query[order_idx:end_idx].strip()
-    
-    # Default ASC jika tidak disebutkan
-    if "DESC" in order_clause.upper():
-        return order_clause  # e.g., "salary DESC"
-    elif "ASC" in order_clause.upper():
-        return order_clause  # e.g., "salary ASC"
-    else:
-        return f"{order_clause} ASC"  # default
-
-def _get_order_by_info(query: str) -> str:
-    q_upper = query.upper()
-    order_idx = q_upper.find("ORDER BY") + 8
-    
-    # Find next keyword
-    end_keywords = ["LIMIT"]
-    end_idx = len(query)
-    
-    for keyword in end_keywords:
-        idx = q_upper.find(keyword, order_idx)
-        if idx != -1:
-            end_idx = idx
-            break
-    
-    order_clause = query[order_idx:end_idx].strip()
-    
-    # Check for DESC/ASC
-    if "DESC" in order_clause.upper():
-        return order_clause
-    elif "ASC" in order_clause.upper():
-        return order_clause
-    else:
-        # Default to ASC
-        return f"{order_clause} ASC"
-    
-def _parse_drop_table(query: str) -> str:
+# parse DROP TABLE statement
+def _parse_drop_table(query: str) -> tuple:
     q_upper = query.upper()
     
     drop_idx = q_upper.find("DROP TABLE") + 10
     table_part = query[drop_idx:].strip().rstrip(';').strip()
     
-    # Check for CASCADE or RESTRICT
-    mode = "RESTRICT"  # default
+    mode = "RESTRICT"
     
     if "CASCADE" in table_part.upper():
         mode = "CASCADE"
@@ -966,22 +1046,20 @@ def _parse_drop_table(query: str) -> str:
     else:
         table_name = table_part
     
-    return f"{table_name}|{mode}"
+    return table_name, mode == "CASCADE"
 
-def _parse_create_table(query: str) -> str:
+# parse CREATE TABLE statement
+def _parse_create_table(query: str) -> tuple:
     q_upper = query.upper()
     
-    # Extract table name
     create_idx = q_upper.find("CREATE TABLE") + 12
     paren_idx = query.find("(", create_idx)
     table_name = query[create_idx:paren_idx].strip()
     
-    # Extract content inside parentheses
     content_start = paren_idx + 1
     content_end = query.rfind(")")
     content = query[content_start:content_end].strip()
     
-    # Split by comma (careful with nested parens)
     parts = []
     current_part = ""
     paren_depth = 0
@@ -1002,7 +1080,6 @@ def _parse_create_table(query: str) -> str:
     if current_part.strip():
         parts.append(current_part.strip())
     
-    # Parse each part
     columns = []
     primary_key = []
     foreign_keys = []
@@ -1011,42 +1088,252 @@ def _parse_create_table(query: str) -> str:
         part_upper = part.upper()
         
         if part_upper.startswith("PRIMARY KEY"):
-            # Extract column(s): PRIMARY KEY(col1, col2)
             pk_content = part[part.find("(")+1:part.find(")")].strip()
             primary_key = [c.strip() for c in pk_content.split(",")]
         
         elif part_upper.startswith("FOREIGN KEY"):
-            # FOREIGN KEY(col) REFERENCES table(ref_col)
             fk_match = re.match(
                 r'FOREIGN\s+KEY\s*\((\w+)\)\s+REFERENCES\s+(\w+)\s*\((\w+)\)',
                 part,
                 re.IGNORECASE
             )
             if fk_match:
-                foreign_keys.append(
-                    f"{fk_match.group(1)}:{fk_match.group(2)}:{fk_match.group(3)}"
+                fk = ForeignKeyDefinition(
+                    fk_match.group(1),
+                    fk_match.group(2),
+                    fk_match.group(3)
                 )
+                foreign_keys.append(fk)
         
         else:
-            # Regular column: col_name type [size]
             tokens = part.split()
             if len(tokens) >= 2:
                 col_name = tokens[0]
                 col_type = tokens[1].lower()
                 
-                # Extract size: CHAR(10) or VARCHAR(255)
-                size = ""
+                size = None
                 if "(" in col_type:
                     type_match = re.match(r'(\w+)\((\d+)\)', col_type)
                     if type_match:
                         col_type = type_match.group(1)
-                        size = type_match.group(2)
+                        size = int(type_match.group(2))
                 
-                columns.append(f"{col_name}:{col_type}:{size}")
+                col_def = ColumnDefinition(col_name, col_type, size)
+                columns.append(col_def)
     
-    # Build result
-    columns_str = ",".join(columns)
-    pks_str = ",".join(primary_key)
-    fks_str = ",".join(foreign_keys)
+    return table_name, columns, primary_key, foreign_keys
+
+# parse WHERE condition string dan return ConditionNode atau LogicalNode
+def parse_where_condition(where_str):
+    if not where_str or not where_str.strip():
+        return None
     
-    return f"{table_name}|{columns_str}|{pks_str}|{fks_str}"
+    where_str = where_str.strip()
+    
+    # split by OR (lowest precedence)
+    or_parts = _split_by_keyword(where_str, ' OR ')
+    
+    if len(or_parts) > 1:
+        childs = [parse_where_condition(part) for part in or_parts]
+        return LogicalNode("OR", childs)
+    
+    # split by AND
+    and_parts = _split_by_keyword(where_str, ' AND ')
+    
+    if len(and_parts) > 1:
+        childs = [_parse_single_condition(part) for part in and_parts]
+        return LogicalNode("AND", childs)
+    
+    # single comparison
+    return _parse_single_condition(where_str)
+
+# split string by keyword while respecting nesting
+def _split_by_keyword(text, keyword):
+    parts = []
+    current = ""
+    i = 0
+    
+    while i < len(text):
+        if text[i:i+len(keyword)].upper() == keyword.upper():
+            parts.append(current.strip())
+            current = ""
+            i += len(keyword)
+        else:
+            current += text[i]
+            i += 1
+    
+    if current.strip():
+        parts.append(current.strip())
+    
+    return parts if len(parts) > 1 else [text]
+
+# parse single comparison condition string dan return ConditionNode
+def _parse_single_condition(condition_str):
+    condition_str = condition_str.strip()
+    
+    operators = ['<>', '>=', '<=', '!=', '=', '>', '<']
+    
+    for op in operators:
+        if op in condition_str:
+            parts = condition_str.split(op, 1)
+            if len(parts) == 2:
+                left_str = parts[0].strip()
+                right_str = parts[1].strip()
+                
+                left = _parse_column_reference(left_str)
+                right = _parse_value_or_column(right_str)
+                
+                return ConditionNode(left, op, right)
+    
+    raise Exception(f"Cannot parse condition: {condition_str}")
+
+# parse column reference string dan return ColumnNode
+def _parse_column_reference(col_str):
+    col_str = col_str.strip()
+    
+    if '.' in col_str:
+        parts = col_str.split('.', 1)
+        return ColumnNode(parts[1].strip(), parts[0].strip())
+    else:
+        return ColumnNode(col_str)
+
+# parse value atau column reference
+def _parse_value_or_column(value_str):
+    value_str = value_str.strip()
+    
+    # string literal
+    if (value_str.startswith("'") and value_str.endswith("'")) or \
+       (value_str.startswith('"') and value_str.endswith('"')):
+        return value_str[1:-1]
+    
+    # column reference (tapi cek angka dulu, siapa tau float)
+    try:
+        if '.' in value_str:
+            return float(value_str)
+        else:
+            return int(value_str)
+    except ValueError:
+        pass
+    
+    # try number
+    try:
+        if '.' not in value_str:
+            return int(value_str)
+        else:
+            return float(value_str)
+    except ValueError:
+        return value_str
+
+# parse columns string dan return list of ColumnNode atau "*"
+def parse_columns_from_string(columns_str):
+    if columns_str.strip() == "*":
+        return "*"
+    
+    columns = []
+    parts = columns_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if part:
+            col_node = _parse_column_reference(part)
+            columns.append(col_node)
+    
+    return columns
+
+# parse ORDER BY string dan return list of OrderByItem
+def parse_order_by_string(order_str):
+    if not order_str or not order_str.strip():
+        return []
+    
+    result = []
+    parts = order_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        
+        if part.upper().endswith(' DESC'):
+            col_str = part[:-5].strip()
+            direction = 'DESC'
+        elif part.upper().endswith(' ASC'):
+            col_str = part[:-4].strip()
+            direction = 'ASC'
+        else:
+            col_str = part
+            direction = 'ASC'
+        
+        col_node = _parse_column_reference(col_str)
+        result.append(OrderByItem(col_node, direction))
+    
+    return result
+
+# parse GROUP BY string dan return list of ColumnNode
+def parse_group_by_string(group_str):
+    if not group_str or not group_str.strip():
+        return []
+    
+    result = []
+    parts = group_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if part:
+            col_node = _parse_column_reference(part)
+            result.append(col_node)
+    
+    return result
+
+# parse INSERT columns string dan return list of strings
+def parse_insert_columns_string(columns_str):
+    if not columns_str or not columns_str.strip():
+        return []
+    
+    return [col.strip() for col in columns_str.split(',')]
+
+# parse INSERT values string dan return list of values
+def parse_insert_values_string(values_str):
+    if not values_str or not values_str.strip():
+        return []
+    
+    result = []
+    current = ""
+    in_string = False
+    quote_char = None
+    
+    for i, char in enumerate(values_str):
+        if char in ["'", '"'] and (i == 0 or values_str[i-1] != '\\'):
+            if not in_string:
+                in_string = True
+                quote_char = char
+            elif char == quote_char:
+                in_string = False
+                result.append(current)
+                current = ""
+                quote_char = None
+            else:
+                current += char
+        elif char == ',' and not in_string:
+            if current.strip():
+                val_str = current.strip()
+                try:
+                    if '.' in val_str:
+                        result.append(float(val_str))
+                    else:
+                        result.append(int(val_str))
+                except ValueError:
+                    result.append(val_str)
+                current = ""
+        else:
+            if in_string or char != ' ' or current:
+                current += char
+    
+    if current.strip():
+        val_str = current.strip()
+        try:
+            if '.' in val_str:
+                result.append(float(val_str))
+            else:
+                result.append(int(val_str))
+        except ValueError:
+            result.append(val_str)
+    
+    return result
