@@ -90,21 +90,45 @@ def _run_demo(dbms: MiniDBMS, deps: Dependencies) -> None:
 
 def _run_interactive(dbms: MiniDBMS, deps: Dependencies) -> None:
     print("MariaDanB-MiniDBMS Interactive Shell (type 'exit' to quit)")
+    buffer: list[str] = []
+
     while True:
+        prompt = "SQL> " if not buffer else "... "
         try:
-            raw_query = input("SQL> ")
+            raw_line = input(prompt)
         except EOFError:
+            print()
             break
-
-        stripped = raw_query.strip()
-        if not stripped:
+        except KeyboardInterrupt:
+            print()
+            buffer.clear()
             continue
-        if stripped.lower() in {"exit", "quit"}:
+
+        stripped = raw_line.strip()
+
+        if not buffer and not stripped:
+            continue
+
+        lower = stripped.lower()
+        if not buffer and lower in {"exit", "quit"}:
             break
-
-        try:
-            result = dbms.execute(raw_query)
-        except Exception as exc:
-            print(f"[Error] {exc}")
+        if buffer and lower in {"exit", "quit"}:
+            buffer.clear()
+            print("[Info] Cleared pending statement. Type 'exit' again to quit.")
             continue
-        _print_execution_result(result, deps)
+
+        buffer.append(raw_line)
+        statement = "\n".join(buffer).strip()
+
+        if not statement:
+            buffer.clear()
+            continue
+
+        if statement.endswith(";"):
+            buffer.clear()
+            try:
+                result = dbms.execute(statement)
+            except Exception as exc:
+                print(f"[Error] {exc}")
+                continue
+            _print_execution_result(result, deps)
