@@ -34,11 +34,15 @@ class TwoPhaseLocking(ConcurrencyMethod):
         
         print(f"[LOG] {object.resource_key} dicatat ke Write Set T{transaction_id}.")
 
-    def validate_object(self, object: Row, transaction_id: int, action: Action) -> Response:
-        """Memvalidasi apakah transaksi boleh melakukan aksi tertentu pada objek."""
-        resource_id = object.resource_key
-        
-        op = Operation(transaction_id=transaction_id, resource_id=resource_id, operation_type="R" if action == Action.READ else "W")
+    def validate_object(self, obj: Row, transaction_id: int, action: Action) -> Response:
+        transaction = self.transaction_manager.get_transaction(transaction_id)
+        if not transaction:
+            return Response(False, f"Transaksi {transaction_id} tidak ditemukan.")
+
+        resource_id = obj.resource_key
+
+        op_type = "R" if action == Action.READ else "W"
+        operation = Operation(transaction_id, op_type, resource_id)
 
         result = self.lock_manager.request_lock(op, return_lock_holders=True)
 
@@ -94,7 +98,7 @@ class TwoPhaseLocking(ConcurrencyMethod):
             return Response(False, f"Gagal melepaskan kunci untuk T{transaction_id}: {e}")
 
         try:
-            self.transaction_manager.remove_transaction(transaction_id, None)
+            self.transaction_manager.remove_transaction(transaction_id)
         except Exception as e:
             return Response(False, f"Gagal menghapus transaksi {transaction_id}: {e}")
 
