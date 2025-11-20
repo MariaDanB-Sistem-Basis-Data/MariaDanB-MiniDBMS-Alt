@@ -10,7 +10,7 @@ class LockManager:
 			self.resources[resource_id] = Resource(resourceName=resource_id)
 		return self.resources[resource_id]
 
-	def request_lock(self, operation: Operation) -> bool:
+	def request_lock(self, operation: Operation, return_lock_holders=False) -> bool:
 		tx = operation.transaction_id
 		r_id = operation.resource_id
 		op = str(operation.operation_type).lower()
@@ -28,7 +28,7 @@ class LockManager:
 				res.set_lock('S')
 				res.add_locker(tx)
 				return True
-			return False
+			return (False, set(res.lockedBy)) if return_lock_holders else False
 
 		if want_exclusive:
 			if res.lockMode is None:
@@ -44,9 +44,9 @@ class LockManager:
 					res.add_locker(tx)
 					return True
 				else:
-					return False
-			return False
-		return False
+					return (False, set(res.lockedBy)) if return_lock_holders else False
+			return (False, set(res.lockedBy)) if return_lock_holders else False
+		return (False, set(res.lockedBy)) if return_lock_holders else False
 
 	def release_locks(self, transaction_id:int) -> None:
 		for res in self.resources.values():

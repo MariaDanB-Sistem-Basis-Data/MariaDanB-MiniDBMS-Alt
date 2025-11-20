@@ -1,4 +1,4 @@
-from TwoPhaseLocking import TwoPhaseLocking
+from ccm_methods.TwoPhaseLocking import TwoPhaseLocking
 from ccm_model.TransactionManager import TransactionManager
 from ccm_model.Enums import Action, TransactionStatus
 from ccm_helper.Row import Row
@@ -31,12 +31,12 @@ def run_two_phase_locking_tests():
     resp2 = tpl.validate_object(rowA, 2, Action.READ)
     assert resp2.success is True
 
-    # T2 tries write A → must abort
+    # T2 tries write A → wait
     resp3 = tpl.validate_object(rowA, 2, Action.WRITE)
     assert resp3.success is False
     assert t2.status == TransactionStatus.ABORTED
 
-    # T1 write A → should succeed after T2 aborted
+    # T1 write A → wound T2
     resp4 = tpl.validate_object(rowA, 1, Action.WRITE)
     assert resp4.success is True
 
