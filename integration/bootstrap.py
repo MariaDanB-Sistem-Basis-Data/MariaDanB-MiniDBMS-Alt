@@ -2,22 +2,19 @@
 from __future__ import annotations
 
 import sys
-from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
-from importlib.machinery import ModuleSpec
-from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 SUBMODULE_PATHS = [
     ROOT / "Query-Processor",
-    ROOT / "Query-Optimizer",
-    ROOT / "Storage-Manager",
-    ROOT / "Concurrency-Control-Manager",
-    ROOT / "Failure-Recovery-Manager",
+    ROOT / "Query-Processor" / "query_processor",
+    ROOT / "Query-Processor" / "concurrency_control_manager",
+    ROOT / "Query-Processor" / "failure_recovery_manager",
+    ROOT / "Query-Processor" / "storage_manager",
+    ROOT / "Query-Processor" / "query_optimizer",
 ]
 
 
@@ -28,31 +25,9 @@ def ensure_sys_path() -> None:
             if path_str not in sys.path:
                 sys.path.insert(0, path_str)
 
-
-def _load_module(fullname: str, filepath: Path) -> ModuleType:
-    spec = spec_from_file_location(fullname, filepath)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Failed to load module {fullname} from {filepath}")
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-    sys.modules[fullname] = module
-    return module
-
-
-@contextmanager
-def _bind_top_level_pkg(name: str, path: Path):
-    previous = sys.modules.get(name)
-    package = ModuleType(name)
-    package.__spec__ = ModuleSpec(name, loader=None, is_package=True)
-    package.__path__ = [str(path)]
-    sys.modules[name] = package
-    try:
-        yield
-    finally:
-        if previous is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
+def _import_attr(module_path: str, attr_name: str) -> Any:
+    module = import_module(module_path)
+    return getattr(module, attr_name)
 
 
 @dataclass(frozen=True)
@@ -69,22 +44,22 @@ class Dependencies:
 def load_dependencies() -> Dependencies:
     ensure_sys_path()
 
-    QueryProcessor = import_module("query_processor.QueryProcessor").QueryProcessor
+    QueryProcessor = _import_attr("query_processor.QueryProcessor", "QueryProcessor")
     query_utils = import_module("query_processor.helper.query_utils")
     QueryType = query_utils.QueryType
     get_query_type = query_utils.get_query_type
-    ExecutionResult = import_module("query_processor.model.ExecutionResult").ExecutionResult
-    Rows = import_module("query_processor.model.Rows").Rows
+    ExecutionResult = _import_attr("query_processor.model.ExecutionResult", "ExecutionResult")
+    Rows = _import_attr("query_processor.model.Rows", "Rows")
 
-    ccm_root = ROOT / "Concurrency-Control-Manager"
-    with _bind_top_level_pkg("model", ccm_root / "model"):
-        ccm_module = _load_module("ConcurrencyControlManager", ccm_root / "ConcurrencyControlManager.py")
-    ConcurrencyControlManager = getattr(ccm_module, "ConcurrencyControlManager")
+    ConcurrencyControlManager = _import_attr(
+        "concurrency_control_manager.ConcurrencyControlManager",
+        "ConcurrencyControlManager",
+    )
 
-    frm_root = ROOT / "Failure-Recovery-Manager"
-    with _bind_top_level_pkg("model", frm_root / "model"), _bind_top_level_pkg("helper", frm_root / "helper"):
-        failure_module = _load_module("FailureRecovery", frm_root / "FailureRecovery.py")
-    get_failure_recovery_manager = getattr(failure_module, "getFailureRecoveryManager")
+    get_failure_recovery_manager = _import_attr(
+        "failure_recovery_manager.FailureRecovery",
+        "getFailureRecoveryManager",
+    )
 
     return Dependencies(
         query_processor_cls=QueryProcessor,
