@@ -360,17 +360,28 @@ class QueryExecutor:
 
     # placeholder untuk SORT operation (ORDER BY)
     def _apply_sort(self, data: Rows, column: str) -> Rows:
+
+        # tabel names reference
+        table_names_reference = []
+
+        # table names
+        table_names = self.storage_manager.schema_manager.list_tables()
+
         parts = column.strip().split()
 
-        column = parts[0]
-        is_desc = False
-
-        if len(parts) > 1 and parts[1].upper() == "DESC":
-            is_desc = True
+        for part in parts:
+            if part in table_names :
+                table_names_reference.append(f"datum.{part}") # datum itu emang di hardcode soalnya bakal dipake di 3 line dibawah ini, jd jangan diganti ya - bri
+        
+        if "DESC" in parts :
+            data.data.sort(key=lambda datum: tuple(table_names_reference), reverse=True)
+        else : # Default to ascending
+            data.data.sort(key=lambda datum: tuple(table_names_reference), reverse=False)
 
         # TODO: parts[1] bisa aja bukan ASC or DESC, tambah handling kalau bukan itu
+        # NOTE : DONE yak bang -bri
     
-        return Rows.from_list([{"info": "SORT operation - to be implemented"}])
+        return data
 
     # apply LIMIT operation
     def _apply_limit(self, data: Rows, limit: str) -> Rows:
