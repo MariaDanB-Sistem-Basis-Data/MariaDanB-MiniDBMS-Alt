@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from datetime import datetime
 from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
 
@@ -16,9 +17,14 @@ class TransactionManager:
     def clear(self) -> None:
         self.transactions.clear()
 
-    def begin_transaction(self, transactionId: int) -> None:
-        self.transactions[transactionId] = Transaction(transaction_id=transactionId, status=TransactionStatus.ACTIVE)
-
+    def begin_transaction(self, tid) -> int:
+        self.transactions[tid] = Transaction(
+            transaction_id=tid , 
+            status=TransactionStatus.ACTIVE,
+            start_time=datetime.now()
+        )
+        return tid
+    
     def get_transaction(self, transactionId: int) -> Transaction:
         if transactionId in self.transactions:
             return self.transactions[transactionId]

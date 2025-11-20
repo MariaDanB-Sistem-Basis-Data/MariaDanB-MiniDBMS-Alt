@@ -1,7 +1,7 @@
 import random
 import time
 
-from ConcurrencyMethod import ConcurrencyMethod
+from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
 from ccm_helper.Operation import Operation
 from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
@@ -40,16 +40,44 @@ class TwoPhaseLocking(ConcurrencyMethod):
         
         op = Operation(transaction_id=transaction_id, resource_id=resource_id, operation_type="R" if action == Action.READ else "W")
 
-        success = self.lock_manager.request_lock(op)
-        
-        if success:
-            print(f"[VALID] {action.name} pada {resource_id} berhasil divalidasi dan dikunci oleh T{transaction_id}")
-            return Response(True, f"{action.name} pada {resource_id} divalidasi.")
+        result = self.lock_manager.request_lock(op, return_lock_holders=True)
+
+        if isinstance(result, tuple):
+            success, lock_holders = result
         else:
-            print(f"[KONFLIK] Gagal mendapatkan kunci untuk {resource_id} oleh T{transaction_id}. ABORT.")
-            self.transaction_manager.abort_transaction(transaction_id) 
-            self.lock_manager.release_locks(transaction_id)
-            return Response(False, f"Transaksi {transaction_id} dibatalkan karena konflik pada {resource_id}.")
+            success = result
+            lock_holders = set()
+            
+        if success:
+            print(f"[VALID] {action.name} pada {resource_id} berhasil divalidasi")
+            return Response(True, ...)
+        else:
+            for h in lock_holders:
+                self.deadlock_detector.add_wait_edge(transaction_id, h)
+
+            has_dl, cycle = self.deadlock_detector.check_deadlock()
+            if has_dl:
+                victim = self.pick_victim(cycle) 
+                print(f"[DEADLOCK] Victim: T{victim}")
+                self.abort_transaction(victim)
+                return Response(False, f"Deadlock. Victim T{victim} di-abort.")
+
+            # klo bukan deadlock, wound-wait
+            wait = False
+            for h in lock_holders:
+                if self.transaction_manager.get_transaction(transaction_id).get_start_time() < self.transaction_manager.get_transaction(h).get_start_time():
+                    wait = True
+                    break 
+            if wait: 
+                print(f"[WAIT] T{transaction_id} menunggu lock dari {lock_holders}")
+                return Response(False, f"T{transaction_id} harus menunggu {lock_holders}")
+            else:
+                print(f"[WOUND] T{transaction_id} membunuh {lock_holders}")
+                for h in lock_holders:
+                    self.transaction_manager.abort_transaction(h)
+                    self.lock_manager.release_locks(transaction_id)
+                return Response(False, f"{lock_holders} di abort karena T{transaction_id} adalah transaksi yang lebih tua.")
+
 
     def end_transaction(self, transaction_id: int) -> None:
         """Mengakhiri transaksi."""
@@ -72,3 +100,16 @@ class TwoPhaseLocking(ConcurrencyMethod):
 
         return Response(True, f"Transaksi {transaction_id} berakhir (status={transaction.status.name}).")
             
+    def pick_victim(self, cycle):
+        # yg paling muda
+        victim = None
+        max_start_time = -1
+        
+        for tid in cycle:
+            trx = self.transaction_manager.get_transaction(tid)
+            if trx.get_start_time() > max_start_time:
+                max_start_time = trx.get_start_time()
+                victim = trx
+
+        return victim
+

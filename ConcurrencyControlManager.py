@@ -7,7 +7,7 @@ from ccm_model.Enums import Action, TransactionStatus
 from ccm_model.DeadlockDetector import DeadlockDetector
 from ccm_model.LockManager import LockManager
 from ccm_model.TransactionManager import TransactionManager
-from ConcurrencyMethod import ConcurrencyMethod
+from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
 # sementara
 class Row:
     def __init__(self, name: str):
@@ -23,15 +23,11 @@ class ConcurrencyControlManager:
         self.concurrency_method = method
         method.set_transaction_manager(self.transaction_manager)
 
-    def begin_transaction(self) -> int:
+    def begin_transaction(self, transaction_id) -> int:
         """Memulai transaksi baru dan mengembalikan transaction_id."""
         print("[CCM] Begin transaction called")
 
-        transaction_id = random.randint(1, 100)
-        while self.transaction_manager.has_transaction(transaction_id):
-            transaction_id = random.randint(1, 100)
-
-        self.transaction_manager.begin_transaction(transaction_id)
+        transaction_id = self.transaction_manager.begin_transaction(transaction_id)
 
         return transaction_id
     
@@ -55,25 +51,23 @@ class ConcurrencyControlManager:
 
     def commit_transaction(self, transaction_id: int) -> None:
         """Melakukan commit terhadap transaksi (write data ke log / storage)."""
-        transaction = self.transaction_manager.get_transaction(transaction_id)
+        transaction = self.transaction_manager.commit_transaction(transaction_id)
         if transaction:
-            transaction.status = TransactionStatus.COMMITTED
             print(f"Melakukan commit transaksi {transaction_id}")
             self.end_transaction(transaction_id)
-            return Response(True, f"Transaksi {transaction_id} berhasil di-commit.")
+            return Response(True, f"Transaksi {transaction_id} berhasil di-commit & terminated.")
         else:
             print(f"Commit gagal. Transaksi {transaction_id} tidak ditemukan.")
             return Response(False, f"Transaksi {transaction_id} tidak ditemukan.")
             
     def abort_transaction(self, transaction_id: int) -> None:
         """Membatalkan transaksi dan melakukan rollback (abort)."""
-        transaction = self.transaction_manager.get_transaction(transaction_id)
-        if transaction:
-            transaction.status = TransactionStatus.ABORTED
+        success = self.transaction_manager.abort_transaction(transaction_id)
+        if success:
             print(f"Membatalkan transaksi {transaction_id}")
             # rollback
             self.end_transaction(transaction_id)
-            return Response(True, f"Transaksi {transaction_id} berhasil di-abort.")
+            return Response(True, f"Transaksi {transaction_id} berhasil di-abort & terminated.")
         else:
             print(f"Abort gagal. Transaksi {transaction_id} tidak ditemukan.")
             return Response(False, f"Transaksi {transaction_id} tidak ditemukan.")
