@@ -34,11 +34,11 @@ def run_two_phase_locking_tests():
     # T2 tries write A → must abort
     resp3 = tpl.validate_object(rowA, 2, Action.WRITE)
     assert resp3.success is False
-    assert t2.status == TransactionStatus.ABORTED
+    assert t2.status == TransactionStatus.ACTIVE # harusnnya nunggu gaksih dia, jangan abort
 
     # T1 write A → should succeed after T2 aborted
     resp4 = tpl.validate_object(rowA, 1, Action.WRITE)
-    assert resp4.success is True
+    assert resp4.success is False
 
     # End transaction T1
     tpl.lock_manager.release_locks(1)

@@ -11,6 +11,7 @@ class Transaction:
     status: TransactionStatus
     write_set: list[str] = field(default_factory=list)
     read_set: list[str] = field(default_factory=list)
+    list_operation: list = field(default_factory=list)
     start_time: datetime = None
     last_access_time: datetime = None
     
