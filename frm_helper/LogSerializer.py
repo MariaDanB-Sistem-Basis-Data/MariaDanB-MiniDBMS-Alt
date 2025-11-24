@@ -9,39 +9,46 @@ from frm_model.Checkpoint import Checkpoint
 
 
 class LogSerializer:
-    def __init__(self, logFilePath: str = "logs/wal.json"):
+    def __init__(self, logFilePath: str = "frm_logs/wal.log"):
         self._logFilePath = Path(logFilePath)
         self._ensureLogDirectory()
 
     def _ensureLogDirectory(self) -> None:
-        # Create log directory if it doesn't exist
         self._logFilePath.parent.mkdir(parents=True, exist_ok=True)
         if not self._logFilePath.exists():
-            self._logFilePath.write_text("[]")
+            self._logFilePath.touch()
 
     def writeLogEntry(self, entryDict: Dict[str, Any]) -> None:
-        # Append single log entry to JSON file
-        entries = self.readAllLogs()
-        entries.append(entryDict)
-        self._logFilePath.write_text(json.dumps(entries, indent=2))
+        with self._logFilePath.open('a', encoding='utf-8') as f:
+            json.dump(entryDict, f, ensure_ascii=False)
+            f.write('\n')
 
     def writeLogEntries(self, entries: List[Dict[str, Any]]) -> None:
-        # Append multiple log entries to JSON file
-        existingEntries = self.readAllLogs()
-        existingEntries.extend(entries)
-        self._logFilePath.write_text(json.dumps(existingEntries, indent=2))
+        with self._logFilePath.open('a', encoding='utf-8') as f:
+            for entry in entries:
+                json.dump(entry, f, ensure_ascii=False)
+                f.write('\n')
 
     def readAllLogs(self) -> List[Dict[str, Any]]:
-        # Read all log entries from JSON file
         if not self._logFilePath.exists():
             return []
+
+        entries = []
         try:
-            return json.loads(self._logFilePath.read_text())
-        except json.JSONDecodeError:
+            with self._logFilePath.open('r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+        except Exception:
             return []
 
+        return entries
+
     def readLogs(self) -> List[LogEntry]:
-        # Return all LogEntry items (without checkpoints)
         raw = self.readAllLogs()
         result: List[LogEntry] = []
         for d in raw:
@@ -57,7 +64,6 @@ class LogSerializer:
         return result
 
     def readCheckpoints(self) -> List[Checkpoint]:
-        # Return all checkpoint records from log file
         raw = self.readAllLogs()
         cps: List[Checkpoint] = []
         for d in raw:
@@ -75,53 +81,46 @@ class LogSerializer:
         return cps
 
     def readLogsSince(self, logId: int) -> List[Dict[str, Any]]:
-        # Read log entries starting from specified log_id
         allLogs = self.readAllLogs()
-        return [log for log in allLogs if log.get("log_id", 0) >= logId]
+        return [log for log in allLogs if log.get("log_id", log.get("logId", 0)) >= logId]
 
     def readLogsBetween(self, startId: int, endId: int) -> List[Dict[str, Any]]:
-        # Read log entries within specified range
         allLogs = self.readAllLogs()
-        return [log for log in allLogs if startId <= log.get("log_id", 0) <= endId]
+        return [log for log in allLogs if startId <= log.get("log_id", log.get("logId", 0)) <= endId]
 
     def clearLogs(self) -> None:
-         # Clear all log entries
-        self._logFilePath.write_text("[]")
+        self._logFilePath.write_text("")
 
     def truncateLogsBefore(self, logId: int) -> None:
-        # Remove log entries before specified log_id (after checkpoint)
         allLogs = self.readAllLogs()
-        filteredLogs = [log for log in allLogs if log.get("log_id", 0) >= logId]
-        self._logFilePath.write_text(json.dumps(filteredLogs, indent=2))
+        filteredLogs = [log for log in allLogs if log.get("log_id", log.get("logId", 0)) >= logId]
+
+        # Rewrite file with filtered logs
+        self._logFilePath.write_text("")
+        self.writeLogEntries(filteredLogs)
 
     def backupLogs(self, backupPath: str) -> None:
-        # Create backup copy of log file
         backupFile = Path(backupPath)
         backupFile.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(self._logFilePath, backupFile)
 
     def restoreLogs(self, backupPath: str) -> None:
-        # Restore logs from backup file
         backupFile = Path(backupPath)
         if backupFile.exists():
             shutil.copy2(backupFile, self._logFilePath)
 
     def _serializeDatetime(self, dt: datetime) -> str:
-        # Convert datetime to ISO format string
         return dt.isoformat()
 
     def _deserializeDatetime(self, dtStr: str) -> datetime:
-        # Convert ISO format string to datetime
         return datetime.fromisoformat(dtStr)
 
     def getLogFileSize(self) -> int:
-        # Return log file size in bytes
         if self._logFilePath.exists():
             return self._logFilePath.stat().st_size
         return 0
 
     def isLogFileLarge(self, thresholdMb: float = 10.0) -> bool:
-        # Check if log file exceeds size threshold
         sizeBytes = self.getLogFileSize()
         sizeMb = sizeBytes / (1024 * 1024)
         return sizeMb > thresholdMb

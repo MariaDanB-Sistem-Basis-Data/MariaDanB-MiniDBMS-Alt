@@ -5,7 +5,6 @@ T = TypeVar('T')
 
 
 def singleton(cls: Type[T]) -> Type[T]:
-    """Thread-safe singleton decorator."""
     instances = {}
     lock = threading.Lock()
 

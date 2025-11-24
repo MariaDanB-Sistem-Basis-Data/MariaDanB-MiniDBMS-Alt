@@ -1,11 +1,9 @@
 from datetime import datetime
 from typing import List, Dict, Any
 
-from .Serializable import Serializable
 
-
-class Checkpoint(Serializable):
-    """Checkpoint for recovery. Format: <checkpoint L> where L = active transaction list"""
+class Checkpoint:
+    # Format: <checkpoint L> where L = active transaction list
 
     def __init__(
         self,

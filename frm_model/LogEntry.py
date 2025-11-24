@@ -2,8 +2,6 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from enum import Enum
 
-from .Serializable import Serializable
-
 
 class LogEntryType(Enum):
     START = "start"
@@ -14,8 +12,8 @@ class LogEntryType(Enum):
     CHECKPOINT = "checkpoint"
 
 
-class LogEntry(Serializable):
-    """Log entry for WAL. Format: <Ti start> | <Ti, Xj, V1, V2> | <Ti commit> | <Ti abort>"""
+class LogEntry:
+    # Format: <Ti start> | <Ti, Xj, V1, V2> | <Ti commit> | <Ti abort>
 
     def __init__(
         self,
@@ -80,13 +78,13 @@ class LogEntry(Serializable):
         )
 
     def performUndo(self) -> Any:
-        """Restore old value (Write V1 to Xj)"""
+        # Restore old value (Write V1 to Xj)
         if self._entryType == LogEntryType.UPDATE and self._dataItem is not None:
             return self._oldValue
         return None
 
     def performRedo(self) -> Any:
-        """Apply new value (Write V2 to Xj)"""
+        # Apply new value (Write V2 to Xj)
         if self._entryType in (LogEntryType.UPDATE, LogEntryType.COMPENSATION) and self._dataItem is not None:
             return self._newValue
         return None

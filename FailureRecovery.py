@@ -1,7 +1,15 @@
 from typing import Dict, Optional, List, Any
 from datetime import datetime
+import sys
+from pathlib import Path
 
-from frm_model.ExecutionResult import ExecutionResult, Rows
+query_processor_path = Path(__file__).parent.parent / "Query-Processor"
+if str(query_processor_path) not in sys.path:
+    sys.path.insert(0, str(query_processor_path))
+
+from query_processor.model.ExecutionResult import ExecutionResult
+from query_processor.model.Rows import Rows
+
 from frm_model.RecoveryCriteria import RecoveryCriteria
 from frm_model.LogEntry import LogEntry, LogEntryType
 from frm_model.Checkpoint import Checkpoint
@@ -14,7 +22,7 @@ from frm_helper.Buffer import Buffer
 class FailureRecoveryManager:
     def __init__(
         self,
-        logFilePath: str = "frm_logs/wal.json",
+        logFilePath: str = "frm_logs/wal.log",
         bufferSize: int = 100,
         checkpointIntervalSeconds: int = 300
     ):
@@ -28,7 +36,7 @@ class FailureRecoveryManager:
     def writeLog(self, info: ExecutionResult) -> None:
         next_log_id = self._writeAheadLog.getNextLogId()
 
-        query = info.getQuery()
+        query = info.query
 
         entry_type = LogEntryType.UPDATE
         if "BEGIN" in query.upper():
@@ -42,15 +50,14 @@ class FailureRecoveryManager:
         old_val = None
         new_val = None
 
-        data = info.getData()
+        data = info.data
         update_details: Dict[str, Any] = {}
 
         if isinstance(data, int):
             pass
         elif isinstance(data, Rows):
-            rows_data = data.getData()
-            if rows_data and len(rows_data) > 0:
-                update_details = rows_data[0]
+            if data.data and len(data.data) > 0:
+                update_details = data.data[0]
 
         # {'table': 'table_name', 'column': 'col_name', 'id': row_id, 'old_value': old, 'new_value': new}
         if entry_type == LogEntryType.UPDATE and update_details:
@@ -64,7 +71,7 @@ class FailureRecoveryManager:
 
         log_entry = LogEntry(
             logId=next_log_id,
-            transactionId=info.getTransactionId(),
+            transactionId=info.transaction_id,
             timestamp=datetime.now(),
             entryType=entry_type,
             dataItem=data_item,
@@ -96,11 +103,6 @@ class FailureRecoveryManager:
         self._writeAheadLog.truncateBeforeCheckpoint(checkpoint.getCheckpointId())
 
     def recover(self, criteria: RecoveryCriteria) -> List[Dict[str, Any]]:
-        """
-        Perform transaction rollback based on recovery criteria.
-        Based on Silberschatz Section 16.4.3 - Undo and Redo Operations.
-        Returns list of undo operations to be executed by Storage Manager.
-        """
         undo_operations = []
 
         # Get logs backward from WAL for undo
@@ -147,12 +149,6 @@ class FailureRecoveryManager:
         return time_elapsed >= self._checkpointInterval
 
     def recoverFromSystemFailure(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        ARIES-style recovery after system crash.
-        Based on Silberschatz Section 16.8 - ARIES Recovery Algorithm.
-        Three phases: Analysis, Redo, Undo.
-        Returns dict with 'redo' and 'undo' operations for Storage Manager.
-        """
         committed, aborted, active_txns, last_checkpoint = self._analysisPhase()
         redo_ops = self._redoPhase(last_checkpoint)
         undo_ops = self._undoPhase(active_txns)
@@ -166,10 +162,6 @@ class FailureRecoveryManager:
         }
 
     def _analysisPhase(self) -> tuple:
-        """
-        Analysis phase: Determine which transactions committed, aborted, or were active.
-        Based on Silberschatz Section 16.8.3.
-        """
         committed = set()
         aborted = set()
         active = set()
@@ -202,10 +194,6 @@ class FailureRecoveryManager:
         return committed, aborted, active, last_checkpoint
 
     def _redoPhase(self, checkpoint: Optional[Checkpoint]) -> List[Dict[str, Any]]:
-        """
-        Redo phase: Replay all updates from checkpoint forward.
-        Based on Silberschatz Section 16.8.4.
-        """
         redo_operations = []
         start_log_id = checkpoint.getLastLogId() if checkpoint else 0
         logs_to_redo = self._writeAheadLog.getAllLogsBackward()[::-1]  # Forward order
@@ -230,10 +218,6 @@ class FailureRecoveryManager:
         return redo_operations
 
     def _undoPhase(self, activeTransactions: List[int]) -> List[Dict[str, Any]]:
-        """
-        Undo phase: Rollback all incomplete transactions.
-        Based on Silberschatz Section 16.8.5.
-        """
         undo_operations = []
         logs_backward = self._writeAheadLog.getAllLogsBackward()
 
