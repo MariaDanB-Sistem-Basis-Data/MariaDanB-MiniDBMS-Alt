@@ -1,6 +1,0 @@
-{"logId": 5, "transactionId": 10, "timestamp": "2025-11-24T21:38:20.692345", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null}
-{"logId": 6, "transactionId": 3, "timestamp": "2025-11-24T21:38:20.716480", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null}
-{"logId": 7, "transactionId": 3, "timestamp": "2025-11-24T21:38:20.716480", "entryType": "update", "dataItem": "products.price[1]", "oldValue": 90, "newValue": 100}
-{"logId": 8, "transactionId": 3, "timestamp": "2025-11-24T21:38:20.716480", "entryType": "update", "dataItem": "products.stock[1]", "oldValue": 45, "newValue": 50}
-{"logId": 9, "transactionId": 3, "timestamp": "2025-11-24T21:38:20.716480", "entryType": "commit", "dataItem": null, "oldValue": null, "newValue": null}
-{"logId": 10, "transactionId": 99, "timestamp": "2025-11-24T21:38:20.734024", "entryType": "update", "dataItem": "users.salary[1]", "oldValue": 5000, "newValue": 6000}
