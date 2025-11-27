@@ -157,3 +157,31 @@ class MiniDBMS:
                 writer(result)
             except Exception:
                 pass
+
+    
+    def checkpoint(self) -> bool:
+        # ini buat nge-trigger checkpoint di Failure Recovery Manager
+        # bisa diinvoke scr manual atau otomatis periodik
+        # kalo manual pake dbms.checkpoint()
+        checkpoint_fn = getattr(self.failure_recovery_manager, "saveCheckpoint", None)
+        if callable(checkpoint_fn):
+            try:
+                active_tx_list = list(self._active_transactions) if self._active_transactions else None
+                checkpoint_fn(active_tx_list)
+                return True
+            except Exception as e:
+                print(f"Checkpoint failed: {e}")
+                return False
+        return False
+    
+    def recover_from_failure(self) -> Any:
+        # ini buat nge-trigger recovery process di Failure Recovery Manager
+        recover_fn = getattr(self.failure_recovery_manager, "recoverFromSystemFailure", None)
+        if callable(recover_fn):
+            try:
+                return recover_fn()
+            except Exception as e:
+                print(f"Recovery failed: {e}")
+                return None
+        return None
+    
