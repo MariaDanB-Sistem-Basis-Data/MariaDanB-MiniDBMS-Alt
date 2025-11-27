@@ -1,34 +1,22 @@
 # Failure Recovery Manager
+The Failure Recovery Manager component is responsible for handling recovery when a failure occurs in the implemented mDBMS. This component provides logging and checkpointing mechanisms to support recovery.
 
-
-## How to Run
-
-> [!NOTE]
-> add query processor submodule
- ```bash
-   git submodule add https://github.com/MariaDanB-Sistem-Basis-Data/Query-Processor.git Query-Processor
-   ```
-
-- unit test (from frm root folder) 
+### How to Run Unit Test
+1. Clone this repository.
 ```bash
-  python frm_test/unittest.py
+git clone https://github.com/MariaDanB-Sistem-Basis-Data/Failure-Recovery-Manager.git
 ```
-
+2. Open the project folder in terminal.
+```bash
+cd Failure-Recovery-Manager
+```
+3. Pull the Query Processor component submodule.
+```bash
+git submodule add https://github.com/MariaDanB-Sistem-Basis-Data/Query-Processor.git Query-Processor
+```
 > [!NOTE]
-> if error import, check the import path (may not match)
- ```bash
-   from qp_model.ExecutionResult import ...
-   ```
-
-## Dev Notes
-
-**Code convention**
-> [!IMPORTANT]
-> https://www.oracle.com/java/technologies/javase/codeconventions-namingconventions.html
-
-- for private method, add _ (underscore) before the definitions. e.g. _save(a, b)
-
-<br/>
-
-> [!NOTE]
-> Tentative (dev will based on concurrency control manager - TBA)
+> The Query Processor component is required due to an import in `FailureRecovery.py`. 
+4. Run the Failure Recovery Manager unit test.
+```bash
+python frm_test/unittest.py
+```
