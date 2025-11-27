@@ -1,8 +1,10 @@
 import unittest
 import sys
+import shutil
 from pathlib import Path
 from datetime import datetime
 import json
+import time
 
 parent_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(parent_dir))
@@ -14,11 +16,13 @@ from query_processor.model.ExecutionResult import ExecutionResult
 from query_processor.model.Rows import Rows
 
 from FailureRecovery import getFailureRecoveryManager
+from frm_model.LogEntry import LogEntry, LogEntryType
 from frm_model.RecoveryCriteria import RecoveryCriteria
 from frm_helper.LogSerializer import LogSerializer
+from frm_helper.Buffer import Buffer
 
 
-class TestFailureRecoveryManager(unittest.TestCase):
+class Test01_FailureRecoveryManager(unittest.TestCase):
 
     def setUp(self):
         self.log_path = "frm_logs/wal.log"
@@ -33,6 +37,8 @@ class TestFailureRecoveryManager(unittest.TestCase):
         # Clear log file
         log_file = Path("frm_logs/wal.log")
         if log_file.exists():
+            # Backup existing log
+            shutil.copy(log_file, "frm_logs/wal_backup.log")
             log_file.write_text("")
 
         print("\n[INFO] Cleared wal.log - starting fresh")
@@ -136,8 +142,37 @@ class TestFailureRecoveryManager(unittest.TestCase):
         if len(checkpoints) > 0:
             print(f"[OK] Checkpoint active transactions: {checkpoints[-1].getActiveTransactions()}")
 
-    def test_05_complete_transaction_scenario(self):
-        print("\n[TEST 5] Writing complete transaction scenario...")
+    def test_05_checkpoint_last_log_id(self):
+        print("\n[TEST 5] Testing checkpoint records last log ID...")
+
+        # write logs
+        for i in range(11, 14):
+            exec_result = ExecutionResult(
+                transaction_id=i,
+                timestamp=datetime.now(),
+                message="Transaction started",
+                data=0,
+                query="BEGIN TRANSACTION"
+            )
+            self.frm.writeLog(exec_result)
+
+        self.frm._writeAheadLog.flushBuffer()
+
+        # get last log id, verify
+        logs_before = self.log_serializer.readLogs()
+        last_log_id = logs_before[-1].getLogId() if logs_before else 0
+        self.frm.saveCheckpoint(activeTransactions=[11])
+        checkpoints = self.log_serializer.readCheckpoints()
+
+        if len(checkpoints) > 0:
+            checkpoint = checkpoints[-1]
+            self.assertEqual(checkpoint.getLastLogId(), last_log_id)
+            print(f"[OK] Checkpoint correctly recorded last log ID: {checkpoint.getLastLogId()}")
+        else:
+            print(f"[OK] Checkpoint created (last log ID: {last_log_id})")
+
+    def test_06_complete_transaction_scenario(self):
+        print("\n[TEST 6] Writing complete transaction scenario...")
 
         # Transaction 3: BEGIN -> UPDATE -> UPDATE -> COMMIT
         transactions = [
@@ -166,8 +201,94 @@ class TestFailureRecoveryManager(unittest.TestCase):
         logs = self.log_serializer.readAllLogs()
         print(f"[OK] Complete transaction written. Total logs: {len(logs)}")
 
-    def test_06_verify_log_format(self):
-        print("\n[TEST 6] Verifying log format...")
+    def test_07_multi_row_update(self):
+        print("\n[TEST 7] Testing multi-row UPDATE...")
+
+        # multi row update
+        txn_id = 4
+        updates = [
+            {'id': 1, 'old': 100, 'new': 110},
+            {'id': 2, 'old': 200, 'new': 220},
+            {'id': 3, 'old': 300, 'new': 330}
+        ]
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+
+        for u in updates:
+            test_rows = Rows.from_list([
+                {'table': 'products', 'column': 'price', 'id': u['id'],
+                 'old_value': u['old'], 'new_value': u['new']}
+            ])
+
+            self.frm.writeLog(ExecutionResult(
+                transaction_id=txn_id,
+                timestamp=datetime.now(),
+                message="UPDATE successful",
+                data=test_rows,
+                query=f"UPDATE products SET price={u['new']} WHERE id={u['id']}"
+            ))
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction committed",
+            data=0,
+            query="COMMIT"
+        ))
+
+        self.frm._writeAheadLog.flushBuffer()
+
+        # Verify
+        logs = self.log_serializer.readLogs()
+        txn_logs = [l for l in logs if l.getTransactionId() == txn_id]
+
+        print(f"[OK] Multi-row UPDATE written. Transaction logs: {len(txn_logs)}")
+        self.assertGreaterEqual(len(txn_logs), 4)
+
+    def test_08_abort_transaction(self):
+        print("\n[TEST 8] Testing ABORT transaction...")
+
+        txn_id = 5
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+        test_rows = Rows.from_list([
+            {'table': 'users', 'column': 'credits', 'id': 1,
+             'old_value': 100, 'new_value': 200}
+        ])
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="UPDATE successful",
+            data=test_rows,
+            query="UPDATE users SET credits=200 WHERE id=1"
+        ))
+
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction aborted",
+            data=0,
+            query="ABORT"
+        ))
+
+        self.frm._writeAheadLog.flushBuffer()
+
+        logs = self.log_serializer.readLogs()
+        abort_logs = [l for l in logs if l.getEntryType() == LogEntryType.ABORT]
+        print(f"[OK] ABORT written. Total ABORT logs: {len(abort_logs)}")
+        self.assertGreater(len(abort_logs), 0)
+
+    def test_09_verify_log_format(self):
+        print("\n[TEST 9] Verifying log format...")
 
         log_file = Path(self.log_path)
         if log_file.exists():
@@ -188,32 +309,9 @@ class TestFailureRecoveryManager(unittest.TestCase):
                 print(f"[OK] All {valid_count} lines are valid JSON")
                 print(f"[OK] Format: newline-delimited JSON")
 
-    def test_07_display_log_contents(self):
-        print("\n[TEST 7] Displaying wal.log contents...")
-        print("=" * 60)
-
-        log_file = Path(self.log_path)
-        if log_file.exists():
-            with open(log_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                for i, line in enumerate(lines[:10], 1):  # Show first 10 lines
-                    if line.strip():
-                        try:
-                            log_entry = json.loads(line.strip())
-                            log_type = log_entry.get('entryType', log_entry.get('type', 'unknown'))
-                            txn_id = log_entry.get('transactionId', 'N/A')
-                            print(f"Line {i}: [{log_type}] Transaction {txn_id}")
-                        except:
-                            print(f"Line {i}: {line.strip()[:50]}...")
-
-                if len(lines) > 10:
-                    print(f"... and {len(lines) - 10} more lines")
-
-        print("=" * 60)
-        print(f"[INFO] Full log file: {log_file.absolute()}")
 
 
-class TestRecoveryFeatures(unittest.TestCase):
+class Test02_RecoveryFeatures(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
@@ -221,8 +319,8 @@ class TestRecoveryFeatures(unittest.TestCase):
         self.frm = getFailureRecoveryManager()
         self.log_serializer = LogSerializer(self.log_path)
 
-    def test_08_recovery_by_transaction_id(self):
-        print("\n[TEST 8] Testing recovery by transaction ID...")
+    def test_10_recovery_by_transaction_id(self):
+        print("\n[TEST 10] Testing recovery by transaction ID...")
 
         # Write a transaction
         test_rows = Rows.from_list([
@@ -247,8 +345,8 @@ class TestRecoveryFeatures(unittest.TestCase):
 
         print(f"[OK] Recovery completed. Undo operations: {len(undo_ops)}")
 
-    def test_09_system_failure_recovery(self):
-        print("\n[TEST 9] Testing ARIES system failure recovery...")
+    def test_11_system_failure_recovery(self):
+        print("\n[TEST 11] Testing ARIES system failure recovery...")
 
         # Simulate system crash scenario
         recovery_result = self.frm.recoverFromSystemFailure()
@@ -261,6 +359,263 @@ class TestRecoveryFeatures(unittest.TestCase):
 
         self.assertIn('redo_operations', recovery_result)
         self.assertIn('undo_operations', recovery_result)
+
+
+class Test03_BufferManagement(unittest.TestCase):
+
+    def test_12_buffer_basic_operations(self):
+        print("\n[TEST 12] Testing buffer basic put/get operations...")
+
+        buffer = Buffer[LogEntry](maxSize=5)
+
+        log1 = LogEntry(1, 1001, datetime.now(), LogEntryType.START)
+        log2 = LogEntry(2, 1001, datetime.now(), LogEntryType.UPDATE, "test.data", 0, 1)
+
+        buffer.put("1", log1)
+        buffer.put("2", log2)
+
+        # Verify retrieval
+        retrieved1 = buffer.get("1")
+        retrieved2 = buffer.get("2")
+
+        assert retrieved1 is not None, "Entry 1 should exist"
+        assert retrieved2 is not None, "Entry 2 should exist"
+        assert retrieved1.getLogId() == 1, "Entry 1 should have logId=1"
+
+        print(f"[OK] Buffer operations verified")
+        print(f"  - Buffer size: {buffer.getSize()}")
+        print(f"  - Entry 1 retrieved: LogID={retrieved1.getLogId()}")
+        print(f"  - Entry 2 retrieved: LogID={retrieved2.getLogId()}")
+
+    def test_13_buffer_lru_eviction(self):
+        print("\n[TEST 13] Testing buffer LRU eviction...")
+
+        max_size = 3
+        buffer = Buffer[LogEntry](maxSize=max_size)
+
+        # Fill buffer beyond capacity
+        print(f"[INFO] Filling buffer (max size={max_size}) with 5 entries...")
+        for i in range(1, 6):
+            log = LogEntry(i, 1003, datetime.now(), LogEntryType.START)
+            buffer.put(str(i), log)
+            time.sleep(0.05)  # Ensure different access times
+            print(f"  - Added LogID={i}, Buffer size: {buffer.getSize()}")
+
+        entry1 = buffer.get("1")  # evicted
+        entry5 = buffer.get("5")
+
+        assert entry1 is None, "Oldest entry (LogID=1) should be evicted"
+        assert entry5 is not None, "Newest entry (LogID=5) should remain"
+
+        print(f"[OK] LRU eviction verified")
+        print(f"  - Max size: {max_size}, Current size: {buffer.getSize()}")
+        print(f"  - LogID=1 evicted: {entry1 is None}")
+        print(f"  - LogID=5 present: {entry5 is not None}")
+
+    def test_14_buffer_dirty_flag(self):
+        print("\n[TEST 14] Testing buffer dirty flag tracking...")
+
+        buffer = Buffer[LogEntry](maxSize=10)
+
+        # Add dirty entries
+        print(f"[INFO] Adding 4 dirty entries to buffer...")
+        for i in range(1, 5):
+            log = LogEntry(i, 1005, datetime.now(), LogEntryType.UPDATE)
+            buffer.put(str(i), log, isDirty=True)
+            print(f"  - Added dirty LogID={i}")
+
+        # Verify dirty tracking
+        dirty_entries = buffer.getDirtyEntries()
+        assert len(dirty_entries) == 4, "Should have 4 dirty entries"
+
+        print(f"[OK] Dirty flag verified")
+        print(f"  - Dirty entries: {len(dirty_entries)}")
+        print(f"  - Buffer can track dirty entries for flushing")
+
+
+class Test04_EdgeCases(unittest.TestCase):
+
+    def setUp(self):
+        self.log_path = "frm_logs/wal.log"
+        self.frm = getFailureRecoveryManager()
+        self.log_serializer = LogSerializer(self.log_path)
+
+    def test_15_empty_log_recovery(self):
+        print("\n[TEST 15] Testing recovery when log is empty...")
+
+        # Clear the log file
+        Path("frm_logs/wal.log").write_text("")
+        try:
+            result = self.frm.recoverFromSystemFailure()
+            print(f"[OK] Empty log handled gracefully")
+            print(f"  - Committed: {result.get('committed_transactions', [])}")
+            print(f"  - Active: {result.get('active_transactions', [])}")
+        except Exception as e:
+            self.fail(f"Recovery should handle empty log, but failed: {e}")
+
+    def test_16_large_transaction(self):
+        print("\n[TEST 16] Testing transaction with many updates (30 UPDATEs)...")
+
+        txn_id = 300
+        num_updates = 30
+
+        # BEGIN
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+
+        start_time = time.time()
+
+        # Many updates
+        for i in range(num_updates):
+            test_rows = Rows.from_list([
+                {'table': 'data', 'column': 'value', 'id': i,
+                 'old_value': i, 'new_value': i+1}
+            ])
+
+            self.frm.writeLog(ExecutionResult(
+                transaction_id=txn_id,
+                timestamp=datetime.now(),
+                message="UPDATE",
+                data=test_rows,
+                query=f"UPDATE data SET value={i+1} WHERE id={i}"
+            ))
+
+        # COMMIT
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Transaction committed",
+            data=0,
+            query="COMMIT"
+        ))
+
+        self.frm._writeAheadLog.flushBuffer()
+        elapsed = time.time() - start_time
+
+        # Verify
+        logs = self.log_serializer.readLogs()
+        txn_logs = [l for l in logs if l.getTransactionId() == txn_id]
+
+        print(f"[OK] Large transaction completed")
+        print(f"  - Expected: {num_updates + 2} logs (BEGIN + {num_updates} UPDATEs + COMMIT)")
+        print(f"  - Actual: {len(txn_logs)} logs")
+        print(f"  - Time: {elapsed:.3f}s")
+        self.assertGreaterEqual(len(txn_logs), 3)  # At least BEGIN, UPDATE, COMMIT
+
+    def test_17_database_session_simulation(self):
+        print("\n[TEST 17] Testing complete database session simulation...")
+
+        # User login transaction
+        t1 = 400
+        print(f"[INFO] Transaction {t1}: User login")
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t1,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+
+        test_rows = Rows.from_list([
+            {'table': 'users', 'column': 'last_login', 'id': 1,
+             'old_value': '2024-01-01', 'new_value': '2024-01-02'}
+        ])
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t1,
+            timestamp=datetime.now(),
+            message="UPDATE",
+            data=test_rows,
+            query="UPDATE users SET last_login='2024-01-02' WHERE id=1"
+        ))
+
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t1,
+            timestamp=datetime.now(),
+            message="Transaction committed",
+            data=0,
+            query="COMMIT"
+        ))
+
+        # Checkpoint
+        print(f"[INFO] Creating checkpoint...")
+        self.frm.saveCheckpoint(activeTransactions=[])
+
+        # Purchase transaction
+        t2 = 401
+        print(f"[INFO] Transaction {t2}: Purchase")
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t2,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+
+        test_rows = Rows.from_list([
+            {'table': 'inventory', 'column': 'stock', 'id': 100,
+             'old_value': 50, 'new_value': 49}
+        ])
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t2,
+            timestamp=datetime.now(),
+            message="UPDATE",
+            data=test_rows,
+            query="UPDATE inventory SET stock=49 WHERE id=100"
+        ))
+
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t2,
+            timestamp=datetime.now(),
+            message="Transaction committed",
+            data=0,
+            query="COMMIT"
+        ))
+
+        # Failed transaction (aborted)
+        t3 = 402
+        print(f"[INFO] Transaction {t3}: Failed payment (abort)")
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t3,
+            timestamp=datetime.now(),
+            message="Transaction started",
+            data=0,
+            query="BEGIN TRANSACTION"
+        ))
+
+        test_rows = Rows.from_list([
+            {'table': 'accounts', 'column': 'balance', 'id': 1,
+             'old_value': 100, 'new_value': 50}
+        ])
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t3,
+            timestamp=datetime.now(),
+            message="UPDATE",
+            data=test_rows,
+            query="UPDATE accounts SET balance=50 WHERE id=1"
+        ))
+
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=t3,
+            timestamp=datetime.now(),
+            message="Transaction aborted",
+            data=0,
+            query="ABORT"
+        ))
+
+        self.frm._writeAheadLog.flushBuffer()
+
+        # Verify
+        logs = self.log_serializer.readLogs()
+        print(f"[OK] Database session completed")
+        print(f"  - Total log entries: {len(logs)}")
+        print(f"  - User login: Transaction {t1} (committed)")
+        print(f"  - Purchase: Transaction {t2} (committed)")
+        print(f"  - Failed payment: Transaction {t3} (aborted)")
 
 
 def print_final_summary():
@@ -289,7 +644,7 @@ def print_final_summary():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("Failure Recovery Manager Unit Tests")
+    print("FAILURE RECOVERY MANAGER - UNIT TESTS")
     print("=" * 60)
 
     # Run tests
