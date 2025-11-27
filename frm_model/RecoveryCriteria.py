@@ -18,7 +18,7 @@ class RecoveryCriteria:
         return self._transactionId
 
     def matchesEntry(self, entryTimestamp: datetime, entryTransactionId: int) -> bool:
-        if self._timestamp is not None and entryTimestamp < self._timestamp:
+        if self._timestamp is not None and entryTimestamp <= self._timestamp:
             return False
         if self._transactionId is not None and entryTransactionId != self._transactionId:
             return False

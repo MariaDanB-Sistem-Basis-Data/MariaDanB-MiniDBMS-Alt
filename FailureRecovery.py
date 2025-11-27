@@ -1,15 +1,12 @@
 from typing import Dict, Optional, List, Any
 from datetime import datetime
-import sys
-from pathlib import Path
 
-query_processor_path = Path(__file__).parent.parent / "Query-Processor"
-if str(query_processor_path) not in sys.path:
-    sys.path.insert(0, str(query_processor_path))
+# Exceptions
+from frm_model.Rows import Rows
+from frm_model.ExecutionResult import ExecutionResult
 
-from query_processor.model.ExecutionResult import ExecutionResult
-from query_processor.model.Rows import Rows
 
+# We'll use this mainly
 from frm_model.RecoveryCriteria import RecoveryCriteria
 from frm_model.LogEntry import LogEntry, LogEntryType
 from frm_model.Checkpoint import Checkpoint
@@ -33,7 +30,19 @@ class FailureRecoveryManager:
             self._lastCheckpointTime = datetime.now()
             self.initialized = True
 
+    def _validateExecutionResult(self, info: Any) -> bool:
+        required_attrs = ['query', 'transaction_id', 'data', 'timestamp', 'message']
+
+        for attr in required_attrs:
+            if not hasattr(info, attr):
+                raise ValueError(f"ExecutionResult missing required attribute: {attr}")
+
+        return True
+
+    # cc: @Query-Processor
     def writeLog(self, info: ExecutionResult) -> None:
+        self._validateExecutionResult(info)
+
         next_log_id = self._writeAheadLog.getNextLogId()
 
         query = info.query
@@ -53,11 +62,11 @@ class FailureRecoveryManager:
         data = info.data
         update_details: Dict[str, Any] = {}
 
-        if isinstance(data, int):
-            pass
-        elif isinstance(data, Rows):
+        if isinstance(data, Rows):
             if data.data and len(data.data) > 0:
                 update_details = data.data[0]
+        elif isinstance(data, int):
+            pass
 
         # {'table': 'table_name', 'column': 'col_name', 'id': row_id, 'old_value': old, 'new_value': new}
         if entry_type == LogEntryType.UPDATE and update_details:
@@ -86,6 +95,7 @@ class FailureRecoveryManager:
         if self._writeAheadLog.needsFlush() or self._shouldCheckpoint():
             self.saveCheckpoint()
 
+    # Set checkpoint (obvious isnt it?)
     def saveCheckpoint(self, activeTransactions: Optional[List[int]] = None) -> None:
         # Flush WAL buffer to persistent storage
         self._writeAheadLog.flushBuffer()
@@ -102,6 +112,7 @@ class FailureRecoveryManager:
         # Truncate old log entries before checkpoint (log maintenance)
         self._writeAheadLog.truncateBeforeCheckpoint(checkpoint.getCheckpointId())
 
+    # cc: @Concurrency-Control-Manager
     def recover(self, criteria: RecoveryCriteria) -> List[Dict[str, Any]]:
         undo_operations = []
 
@@ -110,7 +121,7 @@ class FailureRecoveryManager:
 
         # Filter logs matching recovery criteria and perform undo
         for log in logs:
-            if criteria.getTimestamp() and log.getTimestamp() < criteria.getTimestamp():
+            if criteria.getTimestamp() and log.getTimestamp() <= criteria.getTimestamp():
                 break
 
             if criteria.getTransactionId() and log.getTransactionId() != criteria.getTransactionId():
@@ -144,10 +155,10 @@ class FailureRecoveryManager:
         return undo_operations
 
     def _shouldCheckpoint(self) -> bool:
-        # check if checkpoint interval has elapsed
         time_elapsed = (datetime.now() - self._lastCheckpointTime).total_seconds()
         return time_elapsed >= self._checkpointInterval
 
+    # Will look into here later
     def recoverFromSystemFailure(self) -> Dict[str, List[Dict[str, Any]]]:
         committed, aborted, active_txns, last_checkpoint = self._analysisPhase()
         redo_ops = self._redoPhase(last_checkpoint)
