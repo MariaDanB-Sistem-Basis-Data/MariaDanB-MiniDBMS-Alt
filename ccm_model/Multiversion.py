@@ -6,6 +6,7 @@ from ccm_model.Response import Response
 """
     perlu timestamp pada class Transcation
     perlu value pada request_write
+    perlu output version yang dibaca atau ditulis pada response
 """
 
 class DataVersion:
