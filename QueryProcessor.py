@@ -1,7 +1,7 @@
 from datetime import datetime
 import uuid
 
-from typing import Union, List
+from typing import Any, Callable, Union, List, cast
 import re
 import os
 
@@ -9,23 +9,38 @@ from qp_model.ExecutionResult import ExecutionResult
 from qp_model.Rows import Rows
 from qp_helper.query_utils import *
 
-from storage_manager.StorageManager import StorageManager
-from storage_manager.storagemanager_model.data_retrieval import DataRetrieval
-from storage_manager.storagemanager_model.data_write import DataWrite
-from storage_manager.storagemanager_model.condition import Condition
-from storage_manager.storagemanager_helper.schema import Schema
 
-from query_optimizer.QueryOptimizer import OptimizationEngine
-from query_optimizer.model.query_tree import QueryTree
+from MariaDanB_API.IStorageManager import IStorageManager 
+from MariaDanB_API.IDataRetrieval import IDataRetrieval
+from MariaDanB_API.IDataWrite import IDataWrite
+from MariaDanB_API.ICondition import ICondition
+from MariaDanB_API.ISchema import ISchema
+from MariaDanB_API.IOptimizationEngine import IOptimizationEngine
+from MariaDanB_API.IQueryTree import IQueryTree as QueryTree
 
 class QueryProcessor:
-    def __init__(self, optimization_engine: OptimizationEngine, storage_manager: StorageManager):
+    def __init__(
+        self,
+        optimization_engine: IOptimizationEngine,
+        storage_manager: IStorageManager,
+        data_retrieval_factory: Callable[..., IDataRetrieval],
+        data_write_factory: Callable[..., IDataWrite],
+        condition_factory: Callable[..., ICondition],
+        schema_factory: Callable[[], ISchema],
+    ) -> None:
         self.optimization_engine = optimization_engine
         self.storage_manager = storage_manager
+        self._data_retrieval_factory = data_retrieval_factory
+        self._data_write_factory = data_write_factory
+        self._condition_factory = condition_factory
+        self._schema_factory = schema_factory
+        self._transaction_active = False
+        self._transaction_changes: list = []
 
     def execute_query(self, query : str) -> ExecutionResult:
 
-        transaction_id = uuid.uuid4().int
+        transaction_uuid = uuid.uuid4()
+        transaction_id = cast(int, transaction_uuid.int)
 
         query_type = get_query_type(query)
 
@@ -88,6 +103,8 @@ class QueryProcessor:
             parsed_query = self.optimization_engine.parse_query(query)
             optimized_query = self.optimization_engine.optimize_query(parsed_query)
             optimized_query = self.optimization_engine.optimize_query_non_join(optimized_query)
+            if optimized_query.query_tree is None:
+                return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
             result_data = self._execute_query_tree(optimized_query.query_tree)
             
             return result_data
@@ -103,6 +120,8 @@ class QueryProcessor:
     def execute_update(self, query: str) -> Union[Rows, int]:
         try:
             parsed_query = self.optimization_engine.parse_query(query)
+            if parsed_query.query_tree is None:
+                return Rows.from_list(["UPDATE parsing failed - optimizer produced empty query tree"])
             result = self._execute_update_tree(parsed_query.query_tree)
             
             return Rows.from_list([f"Updated {result} rows"])
@@ -185,7 +204,7 @@ class QueryProcessor:
 
     def _fetch_table_data(self, table_name: str) -> Rows:
         try:
-            data_retrieval = DataRetrieval(table=table_name, column="*", conditions=[])
+            data_retrieval = self._data_retrieval_factory(table=table_name, column="*", conditions=[])
             result = self.storage_manager.read_block(data_retrieval)
             
             if result is not None and isinstance(result, list):
@@ -221,11 +240,13 @@ class QueryProcessor:
         operators = [">=", "<=", "!=", "=", ">", "<"]
         operator = None
         col_name = None
-        value = None
+        value = ""
         
         for op in operators:
             if op in condition:
                 parts = condition.split(op)
+                if len(parts) < 2:
+                    continue
                 col_name = parts[0].strip()
                 value = parts[1].strip().strip("'\"")
                 operator = op
@@ -470,13 +491,13 @@ class QueryProcessor:
         try:
             total_updated = 0
             for col, val in updates.items():
-                cond_objects = [self._parse_condition(c) for c in conditions] if conditions else []
+                cond_objects = [cond for cond in (self._parse_condition(c) for c in conditions) if cond] if conditions else []
                 
-                data_write = DataWrite(
-                    table=table_name, 
-                    column=col, 
-                    conditions=cond_objects, 
-                    new_value=val
+                data_write = self._data_write_factory(
+                    table=table_name,
+                    column=col,
+                    conditions=cond_objects,
+                    new_value=val,
                 )
                 
                 result = self.storage_manager.write_block(data_write)
@@ -491,7 +512,7 @@ class QueryProcessor:
             return 0
 
     # parse condition string to Condition object
-    def _parse_condition(self, condition_str: str) -> Condition:
+    def _parse_condition(self, condition_str: str) -> ICondition | None:
         operators = [">=", "<=", "!=", "=", ">", "<"]
         for op in operators:
             if op in condition_str:
@@ -499,7 +520,7 @@ class QueryProcessor:
                 col = parts[0].strip()
                 val = parts[1].strip().strip("'\"")
                 storage_op = "<>" if op == "!=" else op
-                return Condition(column=col, operation=storage_op, operand=val)
+                return self._condition_factory(column=col, operation=storage_op, operand=val)
         
         return None
 
@@ -548,7 +569,12 @@ class QueryProcessor:
                 row_to_insert = {"values": values_list}
 
             try:
-                data_write = DataWrite(table=table_name, column=None, conditions=[], new_value=row_to_insert)
+                data_write = self._data_write_factory(
+                    table=table_name,
+                    column=None,
+                    conditions=[],
+                    new_value=row_to_insert,
+                )
                 res = self.storage_manager.write_block(data_write)
 
                 if isinstance(res, int):
@@ -558,6 +584,8 @@ class QueryProcessor:
             except Exception as e:
                 print(f"Error calling StorageManager.write_block for insert: {e}")
                 return -1
+
+            return Rows.from_list(["INSERT executed - storage manager returned no status"])
 
         except Exception as e:
             print(f"Error executing INSERT: {e}")
@@ -595,10 +623,15 @@ class QueryProcessor:
             if not table_name:
                 return Rows.from_list([f"DELETE parsing failed - no table found"])
 
-            cond_objs = [self._parse_condition(c) for c in conditions] if conditions else []
+            cond_objs = [cond for cond in (self._parse_condition(c) for c in conditions) if cond] if conditions else []
 
             try:
-                data_deletion = DataWrite(table=table_name, column="*", conditions=cond_objs, new_value=None)
+                data_deletion = self._data_write_factory(
+                    table=table_name,
+                    column="*",
+                    conditions=cond_objs,
+                    new_value=None,
+                )
                 res = self.storage_manager.delete_block(data_deletion)
                 # NOTE: If delete_block is implemented it should return an int or truthy result, kaya write_block
                 if isinstance(res, int):
@@ -638,7 +671,7 @@ class QueryProcessor:
         if self.storage_manager.schema_manager.get_table_schema(table_name):
              return Rows.from_list([f"Error: Table '{table_name}' already exists."])
 
-        new_schema = Schema()
+        new_schema = self._schema_factory()
         
         # NOTE: assumes no commas inside the column definition itself
         columns = [c.strip() for c in columns_part.split(',')]
@@ -669,7 +702,8 @@ class QueryProcessor:
             
             # add to schema
             try:
-                new_schema.add_attribute(col_name, col_type, col_size)
+                add_attribute = getattr(new_schema, "add_attribute")
+                add_attribute(col_name, col_type, col_size)
             except ValueError as e:
                  return Rows.from_list([f"Error: {str(e)}"])
 
