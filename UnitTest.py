@@ -1,17 +1,24 @@
 import sys
-sys.path.append('../')
-sys.path.append('../query_processor')
-sys.path.append('../query_optimizer')
-sys.path.append('../storage_manager')
+sys.path.append('./query_optimizer')
+sys.path.append('./storage_manager')
 
-from query_processor.QueryProcessor import QueryProcessor
+from QueryProcessor import QueryProcessor
+from storage_manager.StorageManager import StorageManager
+from query_optimizer.QueryOptimizer import OptimizationEngine
+
+# TODO: masih belum sesuai
 
 def test_select_basic():
     print("\n" + "="*60)
     print("TEST 1: Basic SELECT Query")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT * FROM Student;"
     result = qp.execute_query(query)
     
@@ -30,13 +37,19 @@ def test_select_with_projection():
     print("TEST 2: SELECT with Projection")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT StudentID, FullName FROM Student;"
     result = qp.execute_query(query)
     
     print(f"Query: {query}")
     print(f"Transaction ID: {result.transaction_id}")
     print(f"Message: {result.message}")
+    print(f"Result: {result}")
     print(f"Data rows count: {result.data.rows_count}")
     print(f"Data: {result.data.data}")
     
@@ -48,7 +61,12 @@ def test_select_with_where():
     print("TEST 3: SELECT with WHERE clause")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT * FROM Student WHERE StudentID > 25;"
     result = qp.execute_query(query)
     
@@ -66,7 +84,12 @@ def test_select_with_projection_and_where():
     print("TEST 4: SELECT with Projection and WHERE")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT StudentID, FullName FROM Student WHERE StudentID > 25;"
     result = qp.execute_query(query)
     
@@ -84,7 +107,12 @@ def test_update_basic():
     print("TEST 5: Basic UPDATE Query")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "UPDATE Student SET GPA = 3.95 WHERE StudentID = 3;"
     result = qp.execute_query(query)
     
@@ -101,7 +129,12 @@ def test_error_handling():
     print("TEST 6: Error Handling")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "INVALID QUERY SYNTAX"
     result = qp.execute_query(query)
     
@@ -117,7 +150,12 @@ def test_select_with_limit():
     print("TEST 7: SELECT with LIMIT")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT * FROM Student LIMIT 5;"
     result = qp.execute_query(query)
     
@@ -136,7 +174,12 @@ def test_select_projection_with_limit():
     print("TEST 8: SELECT with Projection and LIMIT")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT StudentID, FullName FROM Student LIMIT 10;"
     result = qp.execute_query(query)
     
@@ -155,7 +198,12 @@ def test_select_where_with_limit():
     print("TEST 9: SELECT with WHERE and LIMIT")
     print("="*60)
     
-    qp = QueryProcessor()
+    storage_path = './storage_manager/data'
+    storage_manager = StorageManager(storage_path)
+    optimization_engine = OptimizationEngine()
+
+    # initialize QueryProcessor with dependencies
+    qp = QueryProcessor(optimization_engine, storage_manager)
     query = "SELECT * FROM Student WHERE GPA > 3.0 LIMIT 3;"
     result = qp.execute_query(query)
     

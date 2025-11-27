@@ -1,8 +1,14 @@
+from datetime import datetime
+import uuid
+
 from typing import Union, List
 import re
 import os
 
-from query_processor.model.Rows import Rows
+from qp_model.ExecutionResult import ExecutionResult
+from qp_model.Rows import Rows
+from qp_helper.query_utils import *
+
 from storage_manager.StorageManager import StorageManager
 from storage_manager.storagemanager_model.data_retrieval import DataRetrieval
 from storage_manager.storagemanager_model.data_write import DataWrite
@@ -12,11 +18,66 @@ from storage_manager.storagemanager_helper.schema import Schema
 from query_optimizer.QueryOptimizer import OptimizationEngine
 from query_optimizer.model.query_tree import QueryTree
 
-class QueryExecutor:
-    def __init__(self) -> None:
-        storage_path = os.path.join(os.path.dirname(__file__), '..', 'storage_manager', 'data')
-        self.storage_manager = StorageManager(storage_path)
-        self.optimization_engine = OptimizationEngine()
+class QueryProcessor:
+    def __init__(self, optimization_engine: OptimizationEngine, storage_manager: StorageManager):
+        self.optimization_engine = optimization_engine
+        self.storage_manager = storage_manager
+
+    def execute_query(self, query : str) -> ExecutionResult:
+
+        transaction_id = uuid.uuid4().int
+
+        query_type = get_query_type(query)
+
+        try:
+            # NOTE: harusnya yang handle keywords kaya FROM, JOIN, WHERE itu dari optimizer karena kan itu keyword bagian dari select atau query lain. soalnya disini cuma ngeidentifikasi tipe query dari keyword awalnya doang (CMIIW)
+
+            # NOTE: feel free to adjust, kode ini dibikin dalam kondisi mengantuk kurang tidur
+
+            result_data = Rows.from_list([])
+            if query_type == QueryType.SELECT:
+                result_data = self.execute_select(query)
+
+            elif query_type == QueryType.UPDATE:
+                result_data = self.execute_update(query)
+
+            elif query_type == QueryType.DELETE:
+                result_data = self.execute_delete(query)
+
+            elif query_type == QueryType.INSERT_INTO:
+                result_data = self.execute_insert(query)
+
+            elif query_type == QueryType.CREATE_TABLE:
+                result_data = self.execute_create_table(query)
+
+            elif query_type == QueryType.DROP_TABLE:
+                result_data = self.execute_drop_table(query)
+
+            elif query_type == QueryType.BEGIN_TRANSACTION:
+                result_data =  self.execute_begin_transaction(query)
+            
+            elif query_type == QueryType.COMMIT:
+                result_data = self.execute_commit(query)
+
+            elif query_type == QueryType.ABORT:
+                result_data = self.execute_abort(query)
+
+            elif query_type == QueryType.ROLLBACK:
+                result_data = self.execute_rollback(query)
+
+            elif query_type in DATA_QUERIES or query_type in TRANSACTION_QUERIES:
+                return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=f"Cek helper/query_utils.py, harusnya ini query type dari bonus yg belum consider dikerjain (query_type: {query_type})", data=0, query=query)
+
+            else: # query_type == QueryType.UNKNOWN
+                return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Error: unknown query syntax", data=-1, query=query)
+
+            # if result_data != error maybe
+
+            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Success", data=result_data, query=query)
+
+        except Exception as e:
+            print(f"Error processing query: {e}")
+            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Error occured when processing query", data=-1, query=query)
 
     # execute SELECT query:
     # 1. parse query menggunakan query optimizer
@@ -681,3 +742,5 @@ class QueryExecutor:
         except Exception as e:
             print(f"Error rolling back transaction: {e}")
             return False
+
+

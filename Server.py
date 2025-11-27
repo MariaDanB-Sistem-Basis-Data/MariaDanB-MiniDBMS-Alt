@@ -3,8 +3,8 @@
 
 import socket
 import threading, json
-from query_processor.QueryProcessor import QueryProcessor
-from query_processor.model.ExecutionResult import ExecutionResult
+from QueryProcessor import QueryProcessor
+from qp_model.ExecutionResult import ExecutionResult
 from storage_manager.storagemanager_helper.data_encoder import DataEncoder
 
 class QueryProcessorServer:
