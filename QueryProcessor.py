@@ -202,9 +202,14 @@ class QueryProcessor:
         
         return 0
 
-    def _fetch_table_data(self, table_name: str) -> Rows:
+    def _fetch_table_data(self, table_name: Any) -> Rows:
         try:
-            data_retrieval = self._data_retrieval_factory(table=table_name, column="*", conditions=[])
+            if hasattr(table_name, 'name'):
+                table_str = str(table_name.name)
+            else:
+                table_str = str(table_name)
+            
+            data_retrieval = self._data_retrieval_factory(table=table_str, column="*", conditions=[])
             result = self.storage_manager.read_block(data_retrieval)
             
             if result is not None and isinstance(result, list):
@@ -533,35 +538,34 @@ class QueryProcessor:
                 parsed = None
 
             table_name = None
-            cols = None
-            values = None
+            cols_list = []
+            values_list = []
 
             if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "INSERT":
-                val = parsed.query_tree.val or ""
-                parts = val.split("|", 2)
-                if len(parts) >= 1:
-                    table_name = parts[0].strip()
-                if len(parts) >= 2:
-                    cols = parts[1].strip()
-                if len(parts) == 3:
-                    values = parts[2].strip()
+                val = parsed.query_tree.val
+                
+                # untuk handle InsertData 
+                if hasattr(val, "table") and hasattr(val, "columns") and hasattr(val, "values"):
+                    table_name = val.table
+                    cols_list = list(val.columns) if val.columns else []
+                    values_list = list(val.values) if val.values else []
+                # Legacy string format: "table|columns|values"
+                elif isinstance(val, str):
+                    parts = val.split("|", 2)
+                    if len(parts) >= 1:
+                        table_name = parts[0].strip()
+                    if len(parts) >= 2:
+                        cols_list = [c.strip() for c in parts[1].split(",")]
+                    if len(parts) == 3:
+                        values_list = [v.strip().strip("'\"") for v in parts[2].split(",")]
             else:
                 return Rows.from_list(["INSERT parsing failed - parsed error"])
 
             if not table_name:
                 return Rows.from_list(["INSERT parsing failed - no table found"])
 
-            # row dict
+            # Build row dict
             row_to_insert = {}
-            values_list = []
-            cols_list = []
-
-            if values:
-                values_list = [v.strip().strip("'\"") for v in values.split(",")]
-
-            if cols:
-                cols_list = [c.strip() for c in cols.split(",")]
-
             if cols_list and values_list and len(cols_list) == len(values_list):
                 row_to_insert = dict(zip(cols_list, values_list))
             elif values_list:
