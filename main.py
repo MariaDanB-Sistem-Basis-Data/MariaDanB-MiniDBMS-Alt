@@ -1,18 +1,5 @@
 
-import sys
-sys.path.append('./query_processor')
-sys.path.append('./query_optimizer')
-sys.path.append('./storage_manager')
-sys.path.append('./concurrency_control_manager')
-sys.path.append('./failure_recovery_manager')
-
-from storage_manager.StorageManager import StorageManager
-from query_optimizer.QueryOptimizer import OptimizationEngine
-
-# NOTE: karena ada folder yang sama di beberapa repo (kaya folder model di setiap repo kan ada, nanti bakal clash dan mungkin error)
-# fixnya pas import pake nama foldernya, contoh: asalnya `from model.blabla import fungsi` jadi `from query_processor.model.blabla import fungsi`
-
-from QueryProcessor import QueryProcessor
+from qp_helper.demo_dependencies import build_query_processor
 
 def demo_select_queries():
     """Demo SELECT queries dengan integrasi Query Optimizer"""
@@ -20,12 +7,7 @@ def demo_select_queries():
     print("DEMO: SELECT QUERIES - Integrated with Query Optimizer")
     print("="*70)
     
-    storage_path = './storage_manager/data'
-    storage_manager = StorageManager(storage_path)
-    optimization_engine = OptimizationEngine()
-
-    # initialize QueryProcessor with dependencies
-    qp = QueryProcessor(optimization_engine, storage_manager)
+    qp = build_query_processor()
     
     # Test 1: Basic SELECT
     print("\n1. Basic SELECT:")
@@ -58,12 +40,7 @@ def demo_update_queries():
     print("DEMO: UPDATE QUERIES")
     print("="*70)
     
-    storage_path = './storage_manager/data'
-    storage_manager = StorageManager(storage_path)
-    optimization_engine = OptimizationEngine()
-
-    # initialize QueryProcessor with dependencies
-    qp = QueryProcessor(optimization_engine, storage_manager)
+    qp = build_query_processor()
     
     # Test 1: Basic UPDATE
     print("\n1. Basic UPDATE:")
@@ -86,12 +63,7 @@ def demo_transaction_queries():
     print("DEMO: TRANSACTION QUERIES (Placeholder)")
     print("="*70)
     
-    storage_path = './storage_manager/data'
-    storage_manager = StorageManager(storage_path)
-    optimization_engine = OptimizationEngine()
-
-    # initialize QueryProcessor with dependencies
-    qp = QueryProcessor(optimization_engine, storage_manager)
+    qp = build_query_processor()
     
     print("\n1. BEGIN TRANSACTION:")
     result = qp.execute_query("BEGIN TRANSACTION;")
@@ -113,12 +85,7 @@ def demo_insert_queries():
     print("DEMO: INSERT QUERIES")
     print("="*70)
 
-    storage_path = './storage_manager/data'
-    storage_manager = StorageManager(storage_path)
-    optimization_engine = OptimizationEngine()
-
-    # initialize QueryProcessor with dependencies
-    qp = QueryProcessor(optimization_engine, storage_manager)
+    qp = build_query_processor()
 
     # INSERT 1
     print("\n1. INSERT single row:")
@@ -143,12 +110,7 @@ def demo_create_table():
     print("DEMO: CREATE TABLE")
     print("="*70)
 
-    storage_path = './storage_manager/data'
-    storage_manager = StorageManager(storage_path)
-    optimization_engine = OptimizationEngine()
-
-    # initialize QueryProcessor with dependencies
-    qp = QueryProcessor(optimization_engine, storage_manager)
+    qp = build_query_processor()
     res = qp.execute_query("CREATE TABLE mahasiswa (id int, name varchar(50), age int)")
     print("CREATE TABLE RES:", res)
 

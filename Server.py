@@ -3,15 +3,15 @@
 
 import socket
 import threading, json
-from QueryProcessor import QueryProcessor
+
+from qp_helper.demo_dependencies import build_query_processor
 from qp_model.ExecutionResult import ExecutionResult
-from storage_manager.storagemanager_helper.data_encoder import DataEncoder
 
 class QueryProcessorServer:
     
     def __init__(self):
         """Initialize server dengan QueryProcessor sebagai model utama"""
-        self.query_processor = QueryProcessor()
+        self.query_processor = build_query_processor()
     
     def execute_query(self, query: str) -> ExecutionResult:
         """

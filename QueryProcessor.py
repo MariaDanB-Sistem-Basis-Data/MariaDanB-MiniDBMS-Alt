@@ -8,6 +8,7 @@ import os
 from qp_model.ExecutionResult import ExecutionResult
 from qp_model.Rows import Rows
 from qp_helper.query_utils import *
+from qp_helper.condition_adapter import NormalizedCondition
 
 
 from MariaDanB_API.IStorageManager import IStorageManager 
@@ -216,11 +217,20 @@ class QueryProcessor:
             return Rows.from_list([])
 
     # apply PROJECT operation - select specific columns
-    def _apply_projection(self, data: Rows, columns: str) -> Rows:
-        if columns == "*":
+    def _apply_projection(self, data: Rows, columns: Any) -> Rows:
+        if isinstance(columns, str):
+            if columns.strip() == "*":
+                return data
+            col_list = [col.strip() for col in columns.split(",") if col.strip()]
+        elif isinstance(columns, (list, tuple)):
+            if len(columns) == 1 and str(columns[0]).strip() == "*":
+                return data
+            col_list = [str(col).strip() for col in columns if str(col).strip()]
+        else:
             return data
         
-        col_list = [col.strip() for col in columns.split(",")]
+        if not col_list:
+            return data
         
         projected_data = []
         for row in data.data:
@@ -233,26 +243,16 @@ class QueryProcessor:
         return Rows.from_list(projected_data)
 
     # apply SIGMA operation - filter rows based on WHERE condition
-    def _apply_selection(self, data: Rows, condition: str) -> Rows:
-        filtered_data = []
-        
-        operators = [">=", "<=", "!=", "=", ">", "<"]
-        operator = None
-        col_name = None
-        value = ""
-        
-        for op in operators:
-            if op in condition:
-                parts = condition.split(op)
-                if len(parts) < 2:
-                    continue
-                col_name = parts[0].strip()
-                value = parts[1].strip().strip("'\"")
-                operator = op
-                break
-        
-        if not operator:
+    def _apply_selection(self, data: Rows, condition: Any) -> Rows:
+        # Normalize condition to internal format
+        normalized = NormalizedCondition.normalize(condition)
+        if not normalized:
             return data
+        
+        col_name = normalized.column
+        operator = normalized.operator
+        value = normalized.value
+        filtered_data = []
         
         for row in data.data:
             if isinstance(row, dict) and col_name in row:
