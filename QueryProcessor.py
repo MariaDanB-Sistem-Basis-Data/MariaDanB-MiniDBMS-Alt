@@ -102,7 +102,6 @@ class QueryProcessor:
         try:
             parsed_query = self.optimization_engine.parse_query(query)
             optimized_query = self.optimization_engine.optimize_query(parsed_query)
-            optimized_query = self.optimization_engine.optimize_query_non_join(optimized_query)
             if optimized_query.query_tree is None:
                 return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
             result_data = self._execute_query_tree(optimized_query.query_tree)
