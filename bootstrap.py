@@ -10,11 +10,11 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parent
 SUBMODULE_PATHS = [
     ROOT / "Query-Processor",
-    ROOT / "Query-Processor" / "query_processor",
-    ROOT / "Query-Processor" / "concurrency_control_manager",
-    ROOT / "Query-Processor" / "failure_recovery_manager",
-    ROOT / "Query-Processor" / "storage_manager",
-    ROOT / "Query-Processor" / "query_optimizer",
+    ROOT / "Query-Optimizer",
+    ROOT / "Storage-Manager",
+    ROOT / "Concurrency-Control-Manager",
+    ROOT / "Failure-Recovery-Manager",
+    ROOT / "MariaDanB-API",
 ]
 
 
