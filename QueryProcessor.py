@@ -473,23 +473,24 @@ class QueryProcessor:
     # returns number of rows updated
     def _perform_update(self, table_name: str, update_operations: list, conditions: list) -> int:
         updates = {}
-        for op in update_operations:
-            if "=" in op:
-                parts = op.split("=")
-                col = parts[0].strip()
-                val = parts[1].strip().strip("'\"")
-                updates[col] = val
+
+        # NOTE: PENTING, dari SM cuma nerima new_value, ga bisa nilai "kolom * 0.4"
         
+        first_condition = conditions[0] if conditions else None # dari spek cuma consider 1 condition aja
+        if first_condition.__class__.__name__ != "ConditionNode":
+            print("Error: UPDATE only supports one condition")
+            return -1
+        
+        cond_objs = [self._condition_factory(column=first_condition.attr.column, operation=first_condition.op, operand=first_condition.value)] if first_condition else []
+
         try:
             total_updated = 0
-            for col, val in updates.items():
-                cond_objects = [cond for cond in (self._parse_condition(c) for c in conditions) if cond] if conditions else []
-                
+            for update in update_operations[0]:
                 data_write = self._data_write_factory(
-                    table=table_name,
-                    column=col,
-                    conditions=cond_objects,
-                    new_value=val,
+                    table=repr(table_name),
+                    column=update.column,
+                    conditions=cond_objs,
+                    new_value=update.value,
                 )
                 
                 result = self.storage_manager.write_block(data_write)
@@ -615,7 +616,7 @@ class QueryProcessor:
                 print("Error: DELETE only supports one condition")
                 return -1
 
-            cond_objs = [self._parse_condition(f"{first_condition.attr} {first_condition.op} {first_condition.value}")] if first_condition else []
+            cond_objs = [self._condition_factory(column=first_condition.attr.column, operation=first_condition.op, operand=first_condition.value)] if first_condition else []
 
             try:
                 data_deletion = self._data_write_factory(
