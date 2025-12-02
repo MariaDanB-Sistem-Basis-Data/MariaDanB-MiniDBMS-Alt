@@ -444,28 +444,16 @@ class QueryProcessor:
         
         return Rows.from_list(result)
 
-    # placeholder untuk SORT operation (ORDER BY)
     def _apply_sort(self, data: Rows, column: str) -> Rows:
 
-        # tabel names reference
-        table_names_reference = []
+        # column = list of OrderByItem
+        for node in reversed(column):
+            column_str = node.column.column
+            ascending = node.direction.upper() == "ASC"
+            data.data.sort(key=lambda datum: datum.get(column_str), reverse=not ascending)
 
-        # table names
-        table_names = self.storage_manager.schema_manager.list_tables()
-
-        parts = column.strip().split()
-
-        for part in parts:
-            if part in table_names :
-                table_names_reference.append(f"datum.{part}") # datum itu emang di hardcode soalnya bakal dipake di 3 line dibawah ini, jd jangan diganti ya - bri
-        
-        if "DESC" in parts :
-            data.data.sort(key=lambda datum: tuple(table_names_reference), reverse=True)
-        else : # Default to ascending
-            data.data.sort(key=lambda datum: tuple(table_names_reference), reverse=False)
-
-        # TODO: parts[1] bisa aja bukan ASC or DESC, tambah handling kalau bukan itu
         # NOTE : DONE yak bang -bri
+        # NOTE : dah ku benerin yak bang - kiwz
     
         return data
 
@@ -773,6 +761,7 @@ class QueryProcessor:
         except Exception as e:
             print(f"Error rolling back transaction: {e}")
             return False
+
 
 
 
