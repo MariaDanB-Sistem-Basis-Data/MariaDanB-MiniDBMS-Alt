@@ -28,6 +28,15 @@ class FailureRecoveryManager:
             self._buffer: Buffer[Any] = Buffer(maxSize=bufferSize)
             self._checkpointInterval = checkpointIntervalSeconds
             self._lastCheckpointTime = datetime.now()
+            self._routine = None  # Storage Manager's flush method (set via setRoutine)
+            self._readFromDisk = None  # Storage Manager's read method (set via setReadMethod)
+            """
+            Usage from Storage Manager:
+            self.frm_instance = frm_instance
+            if self.frm_instance is not None:
+                self.frm_instance.setRoutine(self.flushBufferToDisk) # tentative name
+                self.frm_instance.setReadMethod(self._readFullTableAsRows) # tentative name
+            """
             self.initialized = True
 
     def _validateExecutionResult(self, info: Any) -> bool:
@@ -95,8 +104,16 @@ class FailureRecoveryManager:
         if self._writeAheadLog.needsFlush() or self._shouldCheckpoint():
             self.saveCheckpoint()
 
-    # Set checkpoint (obvious isnt it?)
+    def setRoutine(self, routine: callable) -> None:
+        self._routine = routine
+
+    def setReadMethod(self, readMethod: callable) -> None:
+        self._readFromDisk = readMethod
+
     def saveCheckpoint(self, activeTransactions: Optional[List[int]] = None) -> None:
+        if self._routine is not None:
+            self._routine() # ini isinya method flush ke disk
+
         # Flush WAL buffer to persistent storage
         self._writeAheadLog.flushBuffer()
 
@@ -113,9 +130,7 @@ class FailureRecoveryManager:
         self._writeAheadLog.truncateBeforeCheckpoint(checkpoint.getCheckpointId())
 
     # cc: @Concurrency-Control-Manager
-    def recover(self, criteria: RecoveryCriteria) -> List[Dict[str, Any]]:
-        undo_operations = []
-
+    def recover(self, criteria: RecoveryCriteria) -> None:
         # Get logs backward from WAL for undo
         logs = self._writeAheadLog.getAllLogsBackward()
 
@@ -127,32 +142,97 @@ class FailureRecoveryManager:
             if criteria.getTransactionId() and log.getTransactionId() != criteria.getTransactionId():
                 continue
 
-            # Perform undo for UPDATE logs
             if log.getEntryType() == LogEntryType.UPDATE:
-                old_value = log.performUndo()
-                if old_value is not None:
-                    # Create compensation log record (CLR)
-                    clr_id = self._writeAheadLog.getNextLogId()
-                    clr_entry = LogEntry(
-                        logId=clr_id,
-                        transactionId=log.getTransactionId(),
-                        timestamp=datetime.now(),
-                        entryType=LogEntryType.COMPENSATION,
-                        dataItem=log.getDataItem(),
-                        newValue=old_value
+                self._undoLogEntry(log)
+
+        # Abort log
+        abort_log_id = self._writeAheadLog.getNextLogId()
+        abort_entry = LogEntry(
+            logId=abort_log_id,
+            transactionId=criteria.getTransactionId() or 0,
+            timestamp=datetime.now(),
+            entryType=LogEntryType.ABORT
+        )
+        self._writeAheadLog.appendLog(abort_entry)
+        self._writeAheadLog.flushBuffer()
+
+        if self._routine is not None:
+            self._routine() # flush ke disk
+
+    def _undoLogEntry(self, log: LogEntry) -> None:
+        data_item = log.getDataItem()
+        old_value = log.getOldValue()
+
+        if not data_item:
+            return
+
+        try:
+            table, rest = data_item.split('.')
+            column, row_id = rest.split('[')
+            row_id = row_id.rstrip(']')
+        except Exception as e:
+            print(f"[UNDO ERROR] Failed to parse data_item '{data_item}': {e}")
+            return
+
+        table_data = self._buffer.get(table)
+
+        if table_data is None:
+            print(f"[UNDO] Table '{table}' not in buffer, reading from disk...")
+
+            try:
+                table_data = self._readTableFromDisk(table)
+
+                if table_data is None or len(table_data) == 0:
+                    print(f"[UNDO ERROR] Cannot read table '{table}' from disk or table is empty")
+                    raise RuntimeError(
+                        f"UNDO FAILED: Cannot read table '{table}' from disk. "
+                        f"Recovery cannot proceed without data."
                     )
+            except Exception as e:
+                print(f"[UNDO ERROR] Exception while reading table '{table}': {e}")
+                raise RuntimeError(
+                    f"UNDO FAILED: Cannot read table '{table}' from disk: {e}"
+                )
 
-                    # Write CLR to WAL
-                    self._writeAheadLog.appendLog(clr_entry)
+        # Find and update the row
+        row_found = False
+        for row in table_data:
+            if str(row.get('id')) == str(row_id):
+                print(f"[UNDO] Restoring {table}.{column}[{row_id}]: "
+                      f"{row.get(column)} → {old_value}")
+                row[column] = old_value
+                row_found = True
+                break
 
-                    # Add undo operation for Storage Manager to execute
-                    undo_operations.append({
-                        'data_item': log.getDataItem(),
-                        'old_value': old_value,
-                        'transaction_id': log.getTransactionId()
-                    })
+        if not row_found:
+            print(f"[UNDO WARNING] Row {row_id} not found in table '{table}'")
+            # This might be okay if the row was deleted, so don't raise exception
 
-        return undo_operations
+        # Mark as dirty so it gets written back to disk
+        self._buffer.put(table, table_data, isDirty=True)
+
+    def _readTableFromDisk(self, table_name: str) -> Optional[List[Dict[str, Any]]]:
+        if self._readFromDisk is None:
+            print(f"[UNDO ERROR] Cannot read '{table_name}' from disk: No read method set")
+            print(f"[UNDO ERROR] Use frm.setReadMethod(storage_manager._readFullTableAsRows)")
+            return None
+
+        try:
+            table_data = self._readFromDisk(table_name)
+            print(f"[UNDO] Read {len(table_data) if table_data else 0} rows from '{table_name}' on disk")
+            return table_data
+
+        except Exception as e:
+            print(f"[UNDO ERROR] Failed to read table '{table_name}' from disk: {e}")
+            return None
+
+    def tableFromBuffer(self, table_name: str) -> Optional[List[Dict[str, Any]]]:
+        return self._buffer.get(table_name)
+
+    def sendTableToBuffer(self, table_name: str, data: List[Dict[str, Any]], isDirty: bool = False) -> None:
+        self._buffer.put(table_name, data, isDirty=isDirty)
+        if self._buffer.isNearlyFull():
+            self.saveCheckpoint()
 
     def _shouldCheckpoint(self) -> bool:
         time_elapsed = (datetime.now() - self._lastCheckpointTime).total_seconds()
