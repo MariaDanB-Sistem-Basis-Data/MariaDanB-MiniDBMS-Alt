@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from ccm_helper.Row import Row
 from ccm_model.Response import Response
 
 class ConcurrencyMethod(ABC):
@@ -12,7 +13,7 @@ class ConcurrencyMethod(ABC):
         pass
 
     @abstractmethod
-    def validate_object(self, obj, transaction_id: int, action) -> Response:
+    def validate_object(self, obj: Row, transaction_id: int, action) -> Response:
         pass
 
     @abstractmethod

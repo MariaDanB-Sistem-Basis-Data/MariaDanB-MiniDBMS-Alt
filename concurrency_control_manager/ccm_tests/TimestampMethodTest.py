@@ -34,7 +34,7 @@ def run_timestamp_method_tests():
     tm.log_object(row_y, t2)
     
     t2_transaction = txn_manager.get_transaction(t2)
-    assert 'Users:Y' in t2_transaction.write_set, "Y harus ada di write set T2"
+    assert 'Users' in t2_transaction.write_set, "Users harus ada di write set T2 (table-level lock)"
     
     response = tm.end_transaction(t2)
     assert response.success is True, "End transaction harus berhasil"
