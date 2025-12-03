@@ -1,0 +1,3 @@
+[submodule "MariaDanB_API"]
+	path = MariaDanB_API
+	url = https://github.com/MariaDanB-Sistem-Basis-Data/MariaDanB-API

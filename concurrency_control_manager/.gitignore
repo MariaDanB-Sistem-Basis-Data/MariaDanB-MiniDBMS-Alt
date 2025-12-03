@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+
+# Python tooling
+*.pytest_cache/
+*.tox/
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Editor / OS files
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# Python execution artifacts
+*.log
+*.sqlite3
+
+# PDF files
+*.pdf
