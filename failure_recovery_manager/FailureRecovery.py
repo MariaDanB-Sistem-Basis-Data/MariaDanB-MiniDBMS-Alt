@@ -159,6 +159,55 @@ class FailureRecoveryManager:
         if self._routine is not None:
             self._routine() # flush ke disk
 
+    # cc: @Concurrency-Control-Manager
+    def abort(self, transaction_id: int) -> None:
+        print(f"[ABORT] Aborting Transaction {transaction_id}...")
+
+        # Get logs backward from WAL for undo
+        logs = self._writeAheadLog.getAllLogsBackward()
+
+        # undo operations only for the specified transaction
+        for log in logs:
+            if log.getTransactionId() != transaction_id:
+                continue
+
+            # stop once ketemu start log
+            if log.getEntryType() == LogEntryType.START:
+                break
+
+            if log.getEntryType() == LogEntryType.UPDATE:
+                self._undoLogEntry(log)
+
+                # compensation log record (CLR)
+                old_value = log.getOldValue()
+                if old_value is not None:
+                    clr_id = self._writeAheadLog.getNextLogId()
+                    clr_entry = LogEntry(
+                        logId = clr_id,
+                        transactionId = transaction_id,
+                        timestamp = datetime.now(),
+                        entryType = LogEntryType.COMPENSATION,
+                        dataItem = log.getDataItem(),
+                        newValue = old_value 
+                    )
+                    self._writeAheadLog.appendLog(clr_entry)
+
+        # abort log
+        abort_log_id = self._writeAheadLog.getNextLogId()
+        abort_entry = LogEntry(
+            logId = abort_log_id,
+            transactionId = transaction_id,
+            timestamp = datetime.now(),
+            entryType = LogEntryType.ABORT
+        )
+        self._writeAheadLog.appendLog(abort_entry)
+        self._writeAheadLog.flushBuffer()
+        
+        if self._routine is not None:
+            self._routine() # flush ke disk
+
+        print(f"[ABORT] Transaction {transaction_id} aborted successfully.")
+        
     def _undoLogEntry(self, log: LogEntry) -> None:
         data_item = log.getDataItem()
         old_value = log.getOldValue()
