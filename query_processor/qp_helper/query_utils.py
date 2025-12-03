@@ -4,6 +4,11 @@ class QueryType(Enum):
     """
     Enumerate all possible query types
     """
+
+    # supplementary
+    LIST_ALL_TABLES = auto()
+    LIST_COLUMNS = auto()
+
     # data queries
     SELECT = auto()
     UPDATE = auto()
@@ -67,6 +72,10 @@ def get_query_type(query: str) -> QueryType:
         return QueryType.ABORT
     elif q.startswith("ROLLBACK"):
         return QueryType.ROLLBACK
+    elif q.startswith(r"\DT"):
+        return QueryType.LIST_ALL_TABLES
+    elif q.startswith(r"\D"):
+        return QueryType.LIST_COLUMNS
     
     else:
         return QueryType.UNKNOWN
