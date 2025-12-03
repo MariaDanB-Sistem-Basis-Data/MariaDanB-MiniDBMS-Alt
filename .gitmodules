@@ -1,24 +1,3 @@
-[submodule "Query-Processor"]
-	path = Query-Processor
-	url = https://github.com/MariaDanB-Sistem-Basis-Data/Query-Processor.git
-	branch = main
-
-[submodule "Query-Optimizer"]
-	path = Query-Optimizer
-	url = https://github.com/MariaDanB-Sistem-Basis-Data/Query-Optimizer.git
-
-[submodule "Storage-Manager"]
-	path = Storage-Manager
-	url = https://github.com/MariaDanB-Sistem-Basis-Data/Storage-Manager.git
-
-[submodule "Failure-Recovery-Manager"]
-	path = Failure-Recovery-Manager
-	url = https://github.com/MariaDanB-Sistem-Basis-Data/Failure-Recovery-Manager.git
-
-[submodule "Concurrency-Control-Manager"]
-	path = Concurrency-Control-Manager
-	url = https://github.com/MariaDanB-Sistem-Basis-Data/Concurrency-Control-Manager.git
-
 [submodule "MariaDanB-API"]
 	path = MariaDanB-API
 	url = https://github.com/MariaDanB-Sistem-Basis-Data/MariaDanB-API.git
