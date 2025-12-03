@@ -40,7 +40,13 @@ class TwoPhaseLocking(ConcurrencyMethod):
 
         resource_id = obj.resource_key
 
-        op_type = "r" if action == Action.READ else "w"
+        if action == Action.READ :
+            op_type = "r" 
+            self.transaction_manager.add_read_set(transaction_id, obj)
+        else:
+            op_type = "w"
+            self.transaction_manager.add_write_set(transaction_id, obj)
+            
         operation = Operation(transaction_id, op_type, resource_id)
 
         success, lock_holders = self.lock_manager.request_lock(operation)
