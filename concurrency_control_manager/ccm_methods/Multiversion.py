@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from datetime import datetime
 
 from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
@@ -6,8 +6,7 @@ from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
 from ccm_model.Enums import Action, TransactionStatus
 from ccm_model.TransactionManager import TransactionManager
-from ccm_helper.Row import Row
-
+from ccm_helper.resource_identifier import get_resource_id
 
 class DataVersion:
     def __init__(self, value, write_timestamp: float, read_timestamp: float):
@@ -39,7 +38,7 @@ class Multiversion(ConcurrencyMethod):
             self.transaction_timestamps[transaction_id] = self._timestamp_counter
         return self.transaction_timestamps[transaction_id]
 
-    def log_object(self, obj: Row, transaction_id: int) -> None:
+    def log_object(self, obj: Any, transaction_id: int) -> None:
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
             return
@@ -47,22 +46,23 @@ class Multiversion(ConcurrencyMethod):
         if transaction_id not in self.write_sets:
             self.write_sets[transaction_id] = set()
         
-        resource_id = obj.resource_key
+        resource_id = get_resource_id(obj)
         self.write_sets[transaction_id].add(resource_id)
         
         tx_timestamp = self._get_transaction_timestamp(transaction_id)
         
-        result = self._write_version(resource_id, obj.data, tx_timestamp, transaction_id)
+        value = getattr(obj, "data", None)
+        result = self._write_version(resource_id, value, tx_timestamp, transaction_id)
         
         if not result.success:
             print(f"[MVTO LOG] T{transaction_id} write to {resource_id} failed: {result.message}")
 
-    def validate_object(self, obj: Row, transaction_id: int, action: Action) -> Response:
+    def validate_object(self, obj: Any, transaction_id: int, action: Action) -> Response:
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
             return Response(False, f"Transaction {transaction_id} not found.")
         
-        resource_id = obj.resource_key
+        resource_id = get_resource_id(obj)
         tx_timestamp = self._get_transaction_timestamp(transaction_id)
         
         if transaction_id not in self.read_sets:
@@ -76,19 +76,20 @@ class Multiversion(ConcurrencyMethod):
             
             # Find version to read
             result = self._read_version(resource_id, tx_timestamp, transaction_id)
-            self.transaction_manager.add_read_set(transaction_id, obj)
+            self.transaction_manager.add_read_set(transaction_id, resource_id)
             return result
             
         elif action == Action.WRITE:
             self.write_sets[transaction_id].add(resource_id)
             
             # Validate write
-            result = self._write_version(resource_id, obj.data, tx_timestamp, transaction_id)
+            value = getattr(obj, "data", None)
+            result = self._write_version(resource_id, value, tx_timestamp, transaction_id)
             
             if not result.success:
                 print(f"[MVTO WRITE] T{transaction_id} write to {resource_id} FAILED - will abort")
                 self.transaction_manager.abort_transaction(transaction_id)
-            self.transaction_manager.add_write_set(transaction_id, obj)
+            self.transaction_manager.add_write_set(transaction_id, resource_id)
             return result
         
         return Response(False, f"Action {action} not recognized.")
@@ -162,5 +163,17 @@ class Multiversion(ConcurrencyMethod):
         self.write_sets.pop(transaction_id, None)
         self.transaction_timestamps.pop(transaction_id, None)
 
-    def get_versions(self, resource_id: str) -> List[DataVersion]:
-        return self.versions.get(resource_id, [])
+    def get_versions(self, resource) -> List[DataVersion]:
+        """
+        Return version list for a resource; accepts Row or plain identifier.
+        Falls back to table-only match if caller passes a row-style key.
+        """
+        resource_id = get_resource_id(resource)
+        versions = self.versions.get(resource_id)
+
+        # If caller passed row-style key (e.g., "Users:1") but locking is table-level.
+        if versions is None and isinstance(resource, str) and ":" in resource:
+            table_only = resource.split(":", 1)[0]
+            versions = self.versions.get(table_only)
+
+        return versions or []
