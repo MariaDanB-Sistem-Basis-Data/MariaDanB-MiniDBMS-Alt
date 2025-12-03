@@ -836,15 +836,36 @@ class QueryProcessor:
 
     # placeholder BEGIN TRANSACTION
     def execute_begin_transaction(self, query: str) -> Union[Rows, int]:
+
+        # parse the query
+
+        # init the transaction
+
+        # detect every query needed
+
+        # for every query, execute thoroughly based on its type
+
         return Rows.from_list(["BEGIN TRANSACTION - to be implemented"])
 
     # placeholder COMMIT 
-    def execute_commit(self, query: str) -> Union[Rows, int]:
+    def execute_commit(self, query : str) -> Union[Rows, int]:
+
+        # parse the commit word
+
+        # deactivate the transaction id
+
         return Rows.from_list(["COMMIT - to be implemented"])
 
     # placeholder rollback
-    def execute_rollback(self, query: str) -> Union[Rows, int]:
-        # NOTE: di abort ada rollback otomatis?
+    def execute_rollback(self) -> Union[Rows, int]:
+        # NOTE: di abort ada rollback otomatis? yup -bri
+        
+        # get the transaction id
+
+        # pass the transaction id to the fr 
+
+        # do rollback based on that transaction id
+
         return Rows.from_list(["ROLLBACK - to be implemented"])
 
 
