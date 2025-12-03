@@ -9,12 +9,12 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent
 SUBMODULE_PATHS = [
-    ROOT / "Query-Processor",
-    ROOT / "Query-Optimizer",
-    ROOT / "Storage-Manager",
-    ROOT / "Concurrency-Control-Manager",
-    ROOT / "Failure-Recovery-Manager",
-    ROOT / "MariaDanB-API",
+    ROOT / "query_processor",
+    ROOT / "query_optimizer",
+    ROOT / "storage_manager",
+    ROOT / "concurrency_control_manager",
+    ROOT / "failure_recovery_manager",
+    ROOT / "MariaDanB_API",
 ]
 
 
@@ -58,7 +58,7 @@ def load_dependencies() -> Dependencies:
     Condition = _import_attr("storagemanager_model.condition", "Condition")
     Schema = _import_attr("storagemanager_helper.schema", "Schema")
 
-    storage_data_dir = ROOT / "Storage-Manager" / "data"
+    storage_data_dir = ROOT / "storage_manager" / "data"
     storage_data_dir.mkdir(parents=True, exist_ok=True)
 
     def _make_data_retrieval(*, table: str, column: Any, conditions: Any) -> Any:
