@@ -10,24 +10,23 @@ from qp_model.Rows import Rows
 from qp_helper.query_utils import *
 from qp_helper.condition_adapter import NormalizedCondition
 
-
-from MariaDanB_API.IStorageManager import IStorageManager 
-from MariaDanB_API.IDataRetrieval import IDataRetrieval
-from MariaDanB_API.IDataWrite import IDataWrite
-from MariaDanB_API.ICondition import ICondition
-from MariaDanB_API.ISchema import ISchema
-from MariaDanB_API.IOptimizationEngine import IOptimizationEngine
-from MariaDanB_API.IQueryTree import IQueryTree as QueryTree
+from storage_manager.StorageManager import StorageManager as sm
+from storage_manager.storagemanager_model.data_retrieval import DataRetrieval as dr
+from storage_manager.storagemanager_model.data_write import DataWrite as dw
+from storage_manager.storagemanager_model.condition import Condition as cond
+from storage_manager.storagemanager_helper.schema import Schema as sch
+from query_optimizer.QueryOptimizer import OptimizationEngine as oe
+from query_optimizer.model.query_tree import QueryTree as qt
 
 class QueryProcessor:
     def __init__(
         self,
-        optimization_engine: IOptimizationEngine,
-        storage_manager: IStorageManager,
-        data_retrieval_factory: Callable[..., IDataRetrieval],
-        data_write_factory: Callable[..., IDataWrite],
-        condition_factory: Callable[..., ICondition],
-        schema_factory: Callable[[], ISchema],
+        optimization_engine: oe,
+        storage_manager: sm,
+        data_retrieval_factory: Callable[..., dr],
+        data_write_factory: Callable[..., dw],
+        condition_factory: Callable[..., cond],
+        schema_factory: Callable[[], sch],
     ) -> None:
         self.optimization_engine = optimization_engine
         self.storage_manager = storage_manager
@@ -117,7 +116,7 @@ class QueryProcessor:
             print(f"Error executing SELECT query: {e}")
             return -1
 
-    def _extract_table_aliases(self, node: QueryTree):
+    def _extract_table_aliases(self, node: qt):
         if node is None:
             return
         
@@ -155,7 +154,7 @@ class QueryProcessor:
 
     # recursively execute query tree untuk SELECT operations
     # traverse dari root ke leaf (TABLE node) dan apply operations saat return
-    def _execute_query_tree(self, node: QueryTree) -> Rows:
+    def _execute_query_tree(self, node: qt) -> Rows:
         if node is None:
             return Rows.from_list([])
         
@@ -205,7 +204,7 @@ class QueryProcessor:
 
     # execute UPDATE query tree
     # returns jumlah rows yang ter-update
-    def _execute_update_tree(self, node: QueryTree) -> int:
+    def _execute_update_tree(self, node: qt) -> int:
         if node is None:
             return 0
         
@@ -572,7 +571,7 @@ class QueryProcessor:
             return 0
 
     # parse condition string to Condition object
-    def _parse_condition(self, condition_str: str) -> ICondition | None:
+    def _parse_condition(self, condition_str: str) -> cond | None:
         operators = [">=", "<=", "!=", "=", ">", "<"]
         for op in operators:
             if op in condition_str:
