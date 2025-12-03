@@ -6,16 +6,22 @@ from storagemanager_helper.schema_manager import SchemaManager
 from storagemanager_helper.slotted_page import SlottedPage, PAGE_SIZE
 from storagemanager_model.condition import Condition
 from storagemanager_model.data_retrieval import DataRetrieval
+from storagemanager_model.data_write import DataWrite
 from storagemanager_model.index import HashIndexEntry
 from storagemanager_helper.index import HashIndexManager, BPlusTreeIndexManager
 class StorageManager:
-    def __init__(self, base_path='data'):
+    def __init__(self, base_path='data', frm_instance=None):
         self.base_path = base_path
         self.storage_path = base_path
         self.row_serializer = RowSerializer()
         self.schema_manager = SchemaManager(base_path)
         self.hash_index_manager = HashIndexManager(base_path)
         self.bplus_tree_index_manager = BPlusTreeIndexManager(base_path)
+
+        self.frm_instance = frm_instance
+        if self.frm_instance is not None:
+            self.frm_instance.setRoutine(self.flushBufferToDisk)
+            self.frm_instance.setReadMethod(self.putDiskToBuffer)
         
         if not os.path.exists(self.storage_path):
             os.makedirs(self.storage_path)
@@ -591,3 +597,63 @@ class StorageManager:
             b_r = page_count
         
         return Statistic(n_r=n_r, b_r=b_r, l_r=l_r, f_r=f_r, v_a_r=v_a_r, i_r=i_r)
+    
+    def flushBufferToDisk(self):
+        if self.frm_instance is None:
+            return
+        
+        dirty_entries = self.frm_instance._buffer.getDirtyEntries()
+
+        for entry in dirty_entries:
+            table_name = entry.getKey()
+            data = entry.getData()
+
+            self._write_buffer_row_to_disk(table_name, data)
+
+            entry.markClean()
+            
+              
+    def _write_buffer_row_to_disk(self, table_name, row_data):
+        schema = self.schema_manager.get_table_schema(table_name)
+        if schema is None:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan")
+        
+        attributes = schema.get_attributes()
+        
+        primary_key_col = attributes[0]['name']
+
+        for data in row_data:
+            if primary_key_col in data:
+                conditions = [Condition(column=primary_key_col, operation='=', operand=data[primary_key_col])]
+
+                columns = list(data.keys())
+
+                write_request = DataWrite(
+                    table=table_name,
+                    column=columns,
+                    conditions=conditions,
+                    new_value=data
+                )
+
+                self.write_block(write_request)
+
+
+    def putDiskToBuffer(self, table_name):
+        if self.frm_instance is None:
+            return
+        
+        schema = self.schema_manager.get_table_schema(table_name)
+        if schema is None:
+            raise ValueError(f"Tabel '{table_name}' tidak ditemukan")
+        
+        retrieval_request = DataRetrieval(
+            table=table_name,
+            column="*",
+            conditions=[]
+        )
+
+        rows = self.read_block(retrieval_request)
+
+        self.frm_instance._buffer.put(table_name, rows, isDirty=False)
+
+        
