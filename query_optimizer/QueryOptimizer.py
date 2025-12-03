@@ -52,8 +52,23 @@ from helper.helper import (
 )
 
 from helper.stats import get_stats
+import random
 
 class OptimizationEngine:
+
+    def __init__(self):
+        # GA Configuration
+        self.use_ga = True
+        self.ga_population_size = 20
+        self.ga_generations = 50
+        self.ga_mutation_rate = 0.2
+        self.ga_crossover_rate = 0.7
+        self.ga_tournament_size = 3
+        self.ga_elite_size = 2
+        self.ga_threshold_tables = 4  # Pakai GA saat tables >= threshold
+        
+        # Optimization tracking
+        self.last_optimization_info = {}
     
     # parse sql query string dan return ParsedQuery object
     def parse_query(self, query: str) -> ParsedQuery:
@@ -266,12 +281,10 @@ class OptimizationEngine:
         root = parsed_query.query_tree
 
         # 2) APPLY NON-JOIN RULES (push-down & simplify)
-        # do fixed-point iterations
         changed = True
         max_iter = 5
         while changed and max_iter > 0:
             prev = repr(root)
-            # recursive application
             root = self._apply_non_join_rules(root)
             changed = (repr(root) != prev)
             max_iter -= 1
@@ -286,35 +299,242 @@ class OptimizationEngine:
         # 4) TABLE EXTRACTION
         tables = list(_tables_under(root)) if root else []
         if len(tables) <= 1:
+            self.last_optimization_info = {
+                'num_tables': len(tables),
+                'method': 'none',
+                'reason': 'Single or no tables'
+            }
             return ParsedQuery(parsed_query.query, root)
 
-        # 5) EXTRACT NON-JOIN OPERATORS (PROJECT, LIMIT, ORDER BY, GROUP BY, SIGMA)
-        # yang belum di-push ke bawah join tree
+        # 5) EXTRACT NON-JOIN OPERATORS
         upper_operators = _extract_upper_operators(root)
 
         # 6) BUILD JOIN CONDITIONS FROM CURRENT TREE
         join_conditions = self._extract_join_conditions_from_tree(root)
 
-        # 7) ORDER ENUMERATION & PLAN GENERATION
-        orders = _some_permutations(tables, max_count=10)
-        plans = []
-        for order in orders:
-            plan = build_join_tree(order, join_conditions)
-            if plan:
-                plans.append(plan)
-
-        if not plans:
-            return ParsedQuery(parsed_query.query, root)
-
-        # 8) COST MODEL: PICK BEST PLAN
+        # 7) GET STATS
         stats = get_stats()
-        best_join_tree = choose_best(plans, stats)
+
+        # 8) CHOOSE OPTIMIZATION METHOD BASED ON TABLE COUNT
+        best_join_tree = None
+        optimization_info = {
+            'num_tables': len(tables),
+            'tables': tables
+        }
+        
+        if self.use_ga and len(tables) >= self.ga_threshold_tables:
+            # Use both GA and Heuristic, compare results
+            ga_tree, ga_cost, ga_details = self._genetic_algorithm_optimize(
+                tables, join_conditions, stats
+            )
+            heuristic_tree, heuristic_cost = self._heuristic_optimize(
+                tables, join_conditions, stats
+            )
+            
+            # Choose the better one
+            if ga_cost < heuristic_cost:
+                best_join_tree = ga_tree
+                optimization_info.update({
+                    'method': 'genetic_algorithm',
+                    'ga_cost': ga_cost,
+                    'heuristic_cost': heuristic_cost,
+                    'improvement': heuristic_cost - ga_cost,
+                    'improvement_pct': ((heuristic_cost - ga_cost) / heuristic_cost * 100) if heuristic_cost > 0 else 0,
+                    'ga_generations': ga_details['generations_run'],
+                    'ga_converged': ga_details['converged']
+                })
+            else:
+                best_join_tree = heuristic_tree
+                optimization_info.update({
+                    'method': 'heuristic',
+                    'ga_cost': ga_cost,
+                    'heuristic_cost': heuristic_cost,
+                    'reason': 'heuristic_better'
+                })
+        else:
+            # Use heuristic only for simple queries
+            best_join_tree, cost = self._heuristic_optimize(
+                tables, join_conditions, stats
+            )
+            optimization_info.update({
+                'method': 'heuristic',
+                'cost': cost,
+                'reason': f'table_count_below_threshold ({len(tables)} < {self.ga_threshold_tables})'
+            })
+
+        # Store optimization info for later inspection
+        self.last_optimization_info = optimization_info
 
         # 9) REATTACH UPPER OPERATORS TO BEST JOIN TREE
         final_tree = _reattach_upper_operators(best_join_tree, upper_operators)
 
         # 10) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
         return ParsedQuery(parsed_query.query, final_tree)
+
+    def _heuristic_optimize(self, tables, join_conditions, stats):
+        orders = _some_permutations(tables, max_count=10)
+        plans = []
+        for order in orders:
+            plan = build_join_tree(order, join_conditions)
+            if plan:
+                plans.append(plan)
+        
+        if not plans:
+            default_plan = build_join_tree(tables, join_conditions)
+            return default_plan, float('inf')
+        
+        best = choose_best(plans, stats)
+        cost = plan_cost(best, stats)
+        return best, cost
+
+    def _genetic_algorithm_optimize(self, tables, join_conditions, stats):
+        # Initialize population
+        population = self._ga_initialize_population(tables)
+        
+        best_individual = None
+        best_cost = float('inf')
+        cost_history = []
+        
+        for generation in range(self.ga_generations):
+            # Evaluate fitness for all individuals
+            fitness_scores = []
+            for individual in population:
+                plan = build_join_tree(individual, join_conditions)
+                cost = plan_cost(plan, stats) if plan else float('inf')
+                fitness_scores.append((individual, cost))
+            
+            # Sort by cost (lower is better)
+            fitness_scores.sort(key=lambda x: x[1])
+            
+            # Track best individual
+            if fitness_scores[0][1] < best_cost:
+                best_individual = fitness_scores[0][0]
+                best_cost = fitness_scores[0][1]
+            
+            cost_history.append(best_cost)
+            
+            # Early stopping if converged
+            if generation > 10:
+                recent_best = cost_history[-10:]
+                if len(set(recent_best)) == 1:  # No improvement in last 10 generations
+                    break
+            
+            # Elitism: preserve best individuals
+            new_population = [ind for ind, _ in fitness_scores[:self.ga_elite_size]]
+            
+            # Generate rest of population through selection, crossover, mutation
+            while len(new_population) < self.ga_population_size:
+                # Selection: tournament selection
+                parent1 = self._ga_tournament_selection(fitness_scores)
+                parent2 = self._ga_tournament_selection(fitness_scores)
+                
+                # Crossover
+                if random.random() < self.ga_crossover_rate:
+                    child1, child2 = self._ga_crossover(parent1, parent2)
+                else:
+                    child1, child2 = parent1[:], parent2[:]
+                
+                # Mutation
+                if random.random() < self.ga_mutation_rate:
+                    child1 = self._ga_mutate(child1)
+                if random.random() < self.ga_mutation_rate:
+                    child2 = self._ga_mutate(child2)
+                
+                new_population.append(child1)
+                if len(new_population) < self.ga_population_size:
+                    new_population.append(child2)
+            
+            population = new_population
+        
+        # Build final best plan
+        best_tree = build_join_tree(best_individual, join_conditions)
+        
+        details = {
+            'generations_run': generation + 1,
+            'best_order': best_individual,
+            'cost_history': cost_history,
+            'converged': len(set(cost_history[-10:])) == 1 if len(cost_history) >= 10 else False
+        }
+        
+        return best_tree, best_cost, details
+
+    def _ga_initialize_population(self, tables):
+        population = []
+        
+        # Add original order
+        population.append(tables[:])
+        
+        # Add reversed order
+        population.append(tables[::-1])
+        
+        # Add random permutations
+        attempts = 0
+        max_attempts = self.ga_population_size * 10
+        while len(population) < self.ga_population_size and attempts < max_attempts:
+            individual = tables[:]
+            random.shuffle(individual)
+            # Avoid duplicates
+            if individual not in population:
+                population.append(individual)
+            attempts += 1
+        
+        # Fill remaining slots if needed
+        while len(population) < self.ga_population_size:
+            population.append(tables[:])
+        
+        return population
+
+    def _ga_tournament_selection(self, fitness_scores):
+        tournament_size = min(self.ga_tournament_size, len(fitness_scores))
+        tournament = random.sample(fitness_scores, tournament_size)
+        winner = min(tournament, key=lambda x: x[1])
+        return winner[0][:]
+
+    def _ga_crossover(self, parent1, parent2):
+        size = len(parent1)
+        
+        if size <= 1:
+            return parent1[:], parent2[:]
+        
+        # Select two crossover points
+        point1 = random.randint(0, size - 1)
+        point2 = random.randint(point1 + 1, size)
+        
+        # Create children
+        child1 = [None] * size
+        child2 = [None] * size
+        
+        # Copy segment from parents
+        child1[point1:point2] = parent1[point1:point2]
+        child2[point1:point2] = parent2[point1:point2]
+        
+        # Fill remaining positions
+        self._ga_fill_child(child1, parent2, point2)
+        self._ga_fill_child(child2, parent1, point2)
+        
+        return child1, child2
+
+    def _ga_fill_child(self, child, parent, start_pos):
+        size = len(child)
+        current_pos = start_pos % size
+        parent_pos = start_pos % size
+        
+        filled = 0
+        max_iterations = size * 2  # Safety limit
+        
+        while None in child and filled < max_iterations:
+            if parent[parent_pos] not in child:
+                child[current_pos] = parent[parent_pos]
+                current_pos = (current_pos + 1) % size
+                filled += 1
+            parent_pos = (parent_pos + 1) % size
+
+    def _ga_mutate(self, individual):
+        individual = individual[:]
+        if len(individual) > 1:
+            idx1, idx2 = random.sample(range(len(individual)), 2)
+            individual[idx1], individual[idx2] = individual[idx2], individual[idx1]
+        return individual
 
     def get_cost(self, parsed_query: ParsedQuery) -> int:
         if not parsed_query or not parsed_query.query_tree:
@@ -323,54 +543,51 @@ class OptimizationEngine:
         # TODO: ==================== [UNCOMMENT SAAT INTEGRASI SM] ====================
         # Uncomment blok di bawah untuk menggunakan StorageManager:
         #
-        # try:
-        #     from StorageManager import StorageManager  # sesuaikan path SM
-        #     from helper.cost import CostPlanner
-        #     
-        #     # Inisialisasi StorageManager
-        #     storage_manager = StorageManager(base_path='data')  # sesuaikan path data nya
-        #     
-        #     # Inisialisasi CostPlanner dengan SM
-        #     cost_planner = CostPlanner(storage_manager=storage_manager)
-        #     
-        #     # Return cost dari CostPlanner
-        #     return cost_planner.get_cost(parsed_query)
-        # 
-        # except ImportError:
-        #     # Fallback ke dummy stats jika SM tidak tersedia
-        #     pass
+        try:
+            from storage_manager import StorageManager
+            from helper.cost import CostPlanner
+            
+            storage_manager = StorageManager(base_path='data')
+            cost_planner = CostPlanner(storage_manager=storage_manager)
+            
+            return cost_planner.get_cost(parsed_query)
+        
+        except ImportError:
+            pass
         # ===========================================================================
         
-        # ini nanti hapus aja setelah integrasi SM
+        # Fallback to dummy stats
         root = parsed_query.query_tree
         stats = get_stats()
         return plan_cost(root, stats)
+    
+    def get_optimization_info(self):
+        return self.last_optimization_info.copy()
     
     def optimize_query_non_join(self, pq: ParsedQuery) -> ParsedQuery:
         if not pq or not pq.query_tree:
             return pq
         
         root = pq.query_tree
-        # nyobain aja max iterasi 5
         max_iterations = 5
         for _ in range(max_iterations):
             old_root = root
-            
             root = self._apply_non_join_rules(root)
-            
             if root == old_root:
                 break
         
         return ParsedQuery(pq.query, root)
 
     def _apply_non_join_rules(self, node: QueryTree) -> QueryTree:
+        """Apply non-join optimization rules recursively."""
         if not node:
             return node
         
-        # rekursif
+        # Recursively apply to children first
         for i, child in enumerate(node.childs):
             node.childs[i] = self._apply_non_join_rules(child)
         
+        # Apply transformation rules
         node = decompose_conjunctive_selection(node)
         node = eliminate_redundant_projections(node)
         node = swap_selection_order(node)
@@ -391,13 +608,13 @@ class OptimizationEngine:
             if n.type == "JOIN":
                 pred = ""
 
-                # coba ambil menggunakan _theta_pred
+                # Try to extract using _theta_pred
                 try:
                     pred = _theta_pred(n)
                 except:
                     pred = ""
 
-                # fallback
+                # Fallback extraction
                 if not pred:
                     if hasattr(n.val, "condition"):
                         pred = str(n.val.condition)
@@ -413,19 +630,18 @@ class OptimizationEngine:
                     right_list = list(_tables_under(n.childs[1]))
 
                     if left_list and right_list:
-                        # pasangan utama
+                        # Main pair
                         key = frozenset({left_list[0], right_list[0]})
                         mapping[key] = pred
 
-                        # pasangan tambahan (mencegah predicate hilang)
+                        # Additional pairs to prevent predicate loss
                         for lt in left_list:
                             for rt in right_list:
                                 mapping.setdefault(frozenset({lt, rt}), pred)
 
-            # recursive
+            # Recursive walk
             for c in getattr(n, "childs", []):
                 walk(c)
 
         walk(node)
         return mapping
-    
