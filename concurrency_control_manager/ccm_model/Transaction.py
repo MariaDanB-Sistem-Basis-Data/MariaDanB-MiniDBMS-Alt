@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Set
 
+from ccm_helper.Row import Row
 from ccm_model.Enums import TransactionStatus
 
 
@@ -9,8 +10,8 @@ from ccm_model.Enums import TransactionStatus
 class Transaction:
     transaction_id: int
     status: TransactionStatus
-    write_set: list[str] = field(default_factory=list)
-    read_set: list[str] = field(default_factory=list)
+    write_set: list[Row] = field(default_factory=list)
+    read_set: list[Row] = field(default_factory=list)
     list_operation: list = field(default_factory=list)
     start_time: datetime = None
     last_access_time: datetime = None
