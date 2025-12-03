@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from datetime import datetime
+from ccm_helper.Row import Row
 from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
 from MariaDanB_API.IFailureRecoveryManager import IFailureRecoveryManager, SupportsRecoveryCriteria, SupportsExecutionResult
@@ -66,6 +67,18 @@ class TransactionManager:
     def remove_transaction(self, transaction_id: int) -> bool:
         if self.has_transaction(transaction_id):
             del self.transactions[transaction_id]
+            return True
+        
+    def add_read_set(self, transaction_id: int, obj: Row) -> bool:
+        transaction  = self.get_transaction(transaction_id)
+        if transaction:
+            transaction.read_set.append(obj)
+            return True
+        
+    def add_write_set(self, transaction_id: int, obj: Row) -> bool:
+        transaction  = self.get_transaction(transaction_id)
+        if transaction:
+            transaction.write_set.append(obj)
             return True
     
     def get_active_transactions(self) -> list[Transaction]:

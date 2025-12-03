@@ -1,6 +1,7 @@
 import random
 import time
 
+from ccm_helper.Row import Row
 from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
 from ccm_model.Enums import Action, TransactionStatus
@@ -37,7 +38,7 @@ class ConcurrencyControlManager:
             raise RuntimeError("Concurrency method belum diset!")
         return self.concurrency_method.log_object(obj, transaction_id)
     
-    def validate_object(self, obj, transaction_id: int, action):
+    def validate_object(self, obj: Row, transaction_id: int, action):
         """Forward ke concurrency method."""
         if not self.concurrency_method:
             raise RuntimeError("Concurrency method belum diset!")
