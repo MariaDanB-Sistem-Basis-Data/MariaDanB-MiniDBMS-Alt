@@ -40,6 +40,10 @@ class TimestampMethod(ConcurrencyMethod):
         response = self.timestamp_manager.validate_operation(operation, tx_datetime)
         
         if response.success:
+            if op_type == "read":
+                self.transaction_manager.add_read_set(transaction_id, obj)
+            else:
+                self.transaction_manager.add_write_set(transaction_id, obj)
             print(f"[VALID] {action.name} pada {resource_id} oleh T{transaction_id} berhasil")
         else:
             print(f"[ABORT] T{transaction_id}: {response.message}")

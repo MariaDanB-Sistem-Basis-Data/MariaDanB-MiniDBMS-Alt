@@ -76,7 +76,7 @@ class Multiversion(ConcurrencyMethod):
             
             # Find version to read
             result = self._read_version(resource_id, tx_timestamp, transaction_id)
-            
+            self.transaction_manager.add_read_set(transaction_id, obj)
             return result
             
         elif action == Action.WRITE:
@@ -88,7 +88,7 @@ class Multiversion(ConcurrencyMethod):
             if not result.success:
                 print(f"[MVTO WRITE] T{transaction_id} write to {resource_id} FAILED - will abort")
                 self.transaction_manager.abort_transaction(transaction_id)
-            
+            self.transaction_manager.add_write_set(transaction_id, obj)
             return result
         
         return Response(False, f"Action {action} not recognized.")
