@@ -58,7 +58,7 @@ def load_dependencies() -> Dependencies:
     Condition = _import_attr("storagemanager_model.condition", "Condition")
     Schema = _import_attr("storagemanager_helper.schema", "Schema")
 
-    storage_data_dir = ROOT / "storage_manager" / "data"
+    storage_data_dir = ROOT / "data"
     storage_data_dir.mkdir(parents=True, exist_ok=True)
 
     def _make_data_retrieval(*, table: str, column: Any, conditions: Any) -> Any:
