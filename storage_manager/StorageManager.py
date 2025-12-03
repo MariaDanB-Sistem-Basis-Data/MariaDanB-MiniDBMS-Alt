@@ -605,10 +605,10 @@ class StorageManager:
         dirty_entries = self.frm_instance._buffer.getDirtyEntries()
 
         for entry in dirty_entries:
-            key = entry.getKey()
+            table_name = entry.getKey()
             data = entry.getData()
 
-            self._write_buffer_row_to_disk(key.table_name, data)
+            self._write_buffer_row_to_disk(table_name, data)
 
             entry.markClean()
             
