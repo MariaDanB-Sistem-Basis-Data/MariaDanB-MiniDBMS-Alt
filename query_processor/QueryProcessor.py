@@ -37,6 +37,7 @@ class QueryProcessor:
         self._schema_factory = schema_factory
         self._transaction_active = False
         self._transaction_changes: list = []
+        self._table_aliases: dict = {}
 
     def execute_query(self, query : str) -> ExecutionResult:
 
@@ -101,10 +102,13 @@ class QueryProcessor:
     # 3. execute query tree dan retrieve data dari storage manager
     def execute_select(self, query: str) -> Union[Rows, int]:
         try:
+            self._table_aliases = {}
             parsed_query = self.optimization_engine.parse_query(query)
             optimized_query = self.optimization_engine.optimize_query(parsed_query)
             if optimized_query.query_tree is None:
                 return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
+            
+            self._extract_table_aliases(optimized_query.query_tree)
             result_data = self._execute_query_tree(optimized_query.query_tree)
             
             return result_data
@@ -112,6 +116,25 @@ class QueryProcessor:
         except Exception as e:
             print(f"Error executing SELECT query: {e}")
             return -1
+
+    def _extract_table_aliases(self, node: QueryTree):
+        if node is None:
+            return
+        
+        if node.type == "TABLE":
+            val_str = str(node.val)
+            if hasattr(node.val, 'name'):
+                val_str = str(node.val.name)
+            
+            parts = val_str.split()
+            if len(parts) == 2:
+                table_name, alias = parts
+                self._table_aliases[alias] = table_name
+            elif len(parts) == 1 and hasattr(node.val, 'alias') and node.val.alias:
+                self._table_aliases[node.val.alias] = parts[0]
+        
+        for child in node.childs:
+            self._extract_table_aliases(child)
 
     # execute UPDATE query:
     # 1. parse query menggunakan query optimizer
@@ -137,7 +160,12 @@ class QueryProcessor:
             return Rows.from_list([])
         
         if node.type == "TABLE":
-            return self._fetch_table_data(node.val)
+            val_str = str(node.val)
+            if hasattr(node.val, 'name'):
+                val_str = str(node.val.name)
+            parts = val_str.split()
+            table_name = parts[0]
+            return self._fetch_table_data(table_name)
         
         child_results = []
         for child in node.childs:
@@ -221,6 +249,13 @@ class QueryProcessor:
             print(f"Error fetching data from Storage Manager: {e}")
             return Rows.from_list([])
 
+    def _resolve_column_name(self, column: str) -> str:
+        if '.' in column:
+            prefix, col_name = column.split('.', 1)
+            if prefix in self._table_aliases:
+                return f"{self._table_aliases[prefix]}.{col_name}"
+        return column
+
     # apply PROJECT operation - select specific columns
     def _apply_projection(self, data: Rows, columns: Any) -> Rows:
         if isinstance(columns, str):
@@ -240,8 +275,40 @@ class QueryProcessor:
         projected_data = []
         for row in data.data:
             if isinstance(row, dict):
-                projected_row = {col: row.get(col) for col in col_list if col in row}
-                projected_data.append(projected_row)
+                projected_row = {}
+                for original_col in col_list:
+                    if '.' in original_col:
+                        prefix, col_name = original_col.split('.', 1)
+                        resolved_prefix = self._table_aliases.get(prefix, prefix)
+                        
+                        found = False
+                        full_col = f"{resolved_prefix}.{col_name}"
+                        if full_col in row:
+                            projected_row[original_col] = row[full_col]
+                            found = True
+                        elif original_col in row:
+                            projected_row[original_col] = row[original_col]
+                            found = True
+                        elif col_name in row:
+                            projected_row[original_col] = row[col_name]
+                            found = True
+                        if not found:
+                            for key in row.keys():
+                                if key.endswith('.' + col_name) or key == col_name:
+                                    projected_row[original_col] = row[key]
+                                    found = True
+                                    break
+                    else:
+                        if original_col in row:
+                            projected_row[original_col] = row[original_col]
+                        else:
+                            for key in row.keys():
+                                if key.endswith('.' + original_col) or key == original_col:
+                                    projected_row[original_col] = row[key]
+                                    break
+                
+                if projected_row:
+                    projected_data.append(projected_row)
             else:
                 projected_data.append(row)
         
@@ -254,7 +321,7 @@ class QueryProcessor:
         if not normalized:
             return data
         
-        col_name = normalized.column
+        col_name = self._resolve_column_name(normalized.column)
         operator = normalized.operator
         value = normalized.value
         filtered_data = []
