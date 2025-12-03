@@ -79,7 +79,7 @@ class QueryProcessor:
                 result_data = self.execute_abort(query)
 
             elif query_type == QueryType.ROLLBACK:
-                result_data = self.execute_rollback(query)
+                result_data = self.execute_rollback()
 
             elif query_type == QueryType.LIST_ALL_TABLES:
                 result_data = self.execute_list_tables(query)
@@ -129,14 +129,15 @@ class QueryProcessor:
         if node.type == "TABLE":
             val_str = str(node.val)
             if hasattr(node.val, 'name'):
-                val_str = str(node.val.name)
+                val_str = str(node.val.name) # type: ignore
             
             parts = val_str.split()
             if len(parts) == 2:
                 table_name, alias = parts
                 self._table_aliases[alias] = table_name
-            elif len(parts) == 1 and hasattr(node.val, 'alias') and node.val.alias:
-                self._table_aliases[node.val.alias] = parts[0]
+            elif len(parts) == 1 and hasattr(node.val, 'alias') :
+                if (node.val.alias): # type: ignore
+                    self._table_aliases[node.val.alias] = parts[0] # type: ignore
         
         for child in node.childs:
             self._extract_table_aliases(child)
@@ -167,7 +168,7 @@ class QueryProcessor:
         if node.type == "TABLE":
             val_str = str(node.val)
             if hasattr(node.val, 'name'):
-                val_str = str(node.val.name)
+                val_str = str(node.val.name) # type: ignore
             parts = val_str.split()
             table_name = parts[0]
             return self._fetch_table_data(table_name)
@@ -184,19 +185,19 @@ class QueryProcessor:
             return self._apply_selection(child_results[0], node.val)
         
         elif node.type == "JOIN" or node.type == "NATURAL_JOIN" or node.type == "THETA_JOIN":
-            return self._apply_join(child_results[0], child_results[1], node.val, node.type)
+            return self._apply_join(child_results[0], child_results[1], str(node.val), node.type)
         
         elif node.type == "CARTESIAN":
             return self._apply_cartesian(child_results[0], child_results[1])
         
         elif node.type == "SORT":
-            return self._apply_sort(child_results[0], node.val)
+            return self._apply_sort(child_results[0], str(node.val))
         
         elif node.type == "LIMIT":
-            return self._apply_limit(child_results[0], node.val)
+            return self._apply_limit(child_results[0], str(node.val))
         
         elif node.type == "GROUP":
-            return self._apply_group(child_results[0], node.val)
+            return self._apply_group(child_results[0], str(node.val))
         
         elif node.type == "OR":
             combined_data = []
@@ -544,8 +545,8 @@ class QueryProcessor:
 
         # column = list of OrderByItem
         for node in reversed(column):
-            column_str = node.column.column
-            ascending = node.direction.upper() == "ASC"
+            column_str = node.column.column  # type: ignore
+            ascending = node.direction.upper() == "ASC" # type: ignore
             data.data.sort(key=lambda datum: datum.get(column_str), reverse=not ascending)
 
         # NOTE : DONE yak bang -bri
@@ -631,9 +632,9 @@ class QueryProcessor:
                 
                 # untuk handle InsertData 
                 if hasattr(val, "table") and hasattr(val, "columns") and hasattr(val, "values"):
-                    table_name = val.table
-                    cols_list = list(val.columns) if val.columns else []
-                    values_list = list(val.values) if val.values else []
+                    table_name = val.table # type: ignore
+                    cols_list = list(val.columns) if val.columns else [] # type: ignore
+                    values_list = list(val.values) if val.values else [] # type: ignore
                 # Legacy string format: "table|columns|values"
                 elif isinstance(val, str):
                     parts = val.split("|", 2)
