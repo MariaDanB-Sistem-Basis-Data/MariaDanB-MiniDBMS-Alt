@@ -1,10 +1,20 @@
 from dataclasses import dataclass
-
 from datetime import datetime
-from ccm_helper.Row import Row
+from typing import Optional
+import os
+import sys
+
 from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
-from MariaDanB_API.IFailureRecoveryManager import IFailureRecoveryManager, SupportsRecoveryCriteria, SupportsExecutionResult
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.append(_PROJECT_ROOT)
+
+try:
+    from failure_recovery_manager.FailureRecovery import FailureRecoveryManager
+except Exception:
+    FailureRecoveryManager = None
 
 @dataclass
 class TransactionManager:
@@ -69,16 +79,16 @@ class TransactionManager:
             del self.transactions[transaction_id]
             return True
         
-    def add_read_set(self, transaction_id: int, obj: Row) -> bool:
+    def add_read_set(self, transaction_id: int, resource_id: str) -> bool:
         transaction  = self.get_transaction(transaction_id)
         if transaction:
-            transaction.read_set.append(obj)
+            transaction.read_set.append(resource_id)
             return True
         
-    def add_write_set(self, transaction_id: int, obj: Row) -> bool:
+    def add_write_set(self, transaction_id: int, resource_id: str) -> bool:
         transaction  = self.get_transaction(transaction_id)
         if transaction:
-            transaction.write_set.append(obj)
+            transaction.write_set.append(resource_id)
             return True
     
     def get_active_transactions(self) -> list[Transaction]:

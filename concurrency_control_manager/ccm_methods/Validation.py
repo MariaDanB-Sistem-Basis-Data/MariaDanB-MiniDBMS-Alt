@@ -1,24 +1,24 @@
 from datetime import datetime
+from typing import Any
 
 from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
-from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
-from ccm_model.Enums import Action, TransactionStatus
+from ccm_model.Enums import Action
 from ccm_model.TransactionManager import TransactionManager
-from ccm_helper.Row import Row
+from ccm_helper.resource_identifier import get_resource_id
 
 
 class Validation(ConcurrencyMethod):
     def __init__(self):
         self.transaction_manager: TransactionManager = None
-        self.local_copies: dict[int, dict[int, any]] = {}  # {transaction_id: {resource_id: value}}
+        self.local_copies: dict[int, dict[str, any]] = {}  # {transaction_id: {resource_id: value}}
         self.validation_timestamps: dict[int, datetime] = {}
         self.finish_timestamps: dict[int, datetime] = {}
         
     def set_transaction_manager(self, transaction_manager: TransactionManager) -> None:
         self.transaction_manager = transaction_manager
 
-    def log_object(self, obj: Row, transaction_id: int) -> None:
+    def log_object(self, obj: Any, transaction_id: int) -> None:
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
             print(f"ERROR: Transaksi {transaction_id} tidak ditemukan untuk logging.")
@@ -26,14 +26,15 @@ class Validation(ConcurrencyMethod):
         
         if transaction_id not in self.local_copies:
             self.local_copies[transaction_id] = {}
+
+        resource_id = get_resource_id(obj)
+
+        transaction.write_set.append(resource_id)
+        self.local_copies[transaction_id][resource_id] = obj
+
+        print(f"[LOG] {resource_id} dicatat ke Write Set T{transaction_id} (local copy).")
         
-        transaction.write_set.append(obj)
-        
-        self.local_copies[transaction_id][obj.resource_key] = obj
-        
-        print(f"[LOG] {obj.resource_key} dicatat ke Write Set T{transaction_id} (local copy).")
-        
-    def validate_object(self, obj: Row, transaction_id: int, action: Action) -> Response:
+    def validate_object(self, obj: Any, transaction_id: int, action: Action) -> Response:
         # gak validasi apa-apa, di akhir
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
@@ -42,16 +43,18 @@ class Validation(ConcurrencyMethod):
         if transaction_id not in self.local_copies:
             self.local_copies[transaction_id] = {}
 
+        resource_id = get_resource_id(obj)
+
         if action == Action.READ:
-            self.transaction_manager.add_read_set(transaction_id, obj)
-            print(f"T{transaction_id} membaca {obj} (dicatat ke Read Set)")
-            return Response(True, f"Read pada {obj} berhasil.")
+            self.transaction_manager.add_read_set(transaction_id, resource_id)
+            print(f"T{transaction_id} membaca {resource_id} (dicatat ke Read Set)")
+            return Response(True, f"Read pada {resource_id} berhasil.")
         
         elif action == Action.WRITE:
-            self.transaction_manager.add_read_set(transaction_id, obj)
-            self.local_copies[transaction_id][obj.resource_key] = obj
-            print(f"[WRITE] T{transaction_id} menulis {obj} (ke local copy)")
-            return Response(True, f"Write pada {obj} berhasil (local).")
+            self.transaction_manager.add_write_set(transaction_id, resource_id)
+            self.local_copies[transaction_id][resource_id] = obj
+            print(f"[WRITE] T{transaction_id} menulis {resource_id} (ke local copy)")
+            return Response(True, f"Write pada {resource_id} berhasil (local).")
         
         return Response(False, f"Action {action} tidak dikenali.")
 
@@ -83,8 +86,8 @@ class Validation(ConcurrencyMethod):
                 continue
             
             if start_ts < finish_ts < validation_ts:
-                write_set_ti = self.transaction_manager.get_transaction(tid).write_set
-                read_set_tj = self.transaction_manager.get_transaction(transaction_id).read_set
+                write_set_ti = set(self.transaction_manager.get_transaction(tid).write_set)
+                read_set_tj = set(self.transaction_manager.get_transaction(transaction_id).read_set)
                 
                 intersection = write_set_ti & read_set_tj
                 
