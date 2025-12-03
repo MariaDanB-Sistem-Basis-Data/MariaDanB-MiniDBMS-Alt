@@ -1,14 +1,15 @@
 from datetime import datetime
+from typing import Any
 
 from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
 from ccm_helper.Operation import Operation
 from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
-from ccm_model.Enums import Action, TransactionStatus
+from ccm_model.Enums import Action
 from ccm_model.DeadlockDetector import DeadlockDetector
 from ccm_model.LockManager import LockManager
 from ccm_model.TransactionManager import TransactionManager
-from ccm_helper.Row import Row
+from ccm_helper.resource_identifier import get_resource_id
 
 
 class TwoPhaseLocking(ConcurrencyMethod):
@@ -22,25 +23,32 @@ class TwoPhaseLocking(ConcurrencyMethod):
     def set_transaction_manager(self, transaction_manager: TransactionManager) -> None:
         self.transaction_manager = transaction_manager
 
-    def log_object(self, object: Row, transaction_id: int) -> None:
-        """Mencatat objek (Row) yang diakses oleh transaksi."""
+    def log_object(self, object: Any, transaction_id: int) -> None:
+        """Mencatat resource yang diakses oleh transaksi (string nama tabel atau Row)."""
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
              print(f"ERROR: Transaksi {transaction_id} tidak ditemukan untuk logging.")
              return
              
-        transaction.write_set.append(object.resource_key)
+        resource_id = get_resource_id(object)
+        transaction.write_set.append(resource_id)
         
-        print(f"[LOG] {object.resource_key} dicatat ke Write Set T{transaction_id}.")
+        print(f"[LOG] {resource_id} dicatat ke Write Set T{transaction_id}.")
 
-    def validate_object(self, obj: Row, transaction_id: int, action: Action) -> Response:
+    def validate_object(self, obj: Any, transaction_id: int, action: Action) -> Response:
         transaction = self.transaction_manager.get_transaction(transaction_id)
         if not transaction:
             return Response(False, f"Transaksi {transaction_id} tidak ditemukan.")
 
-        resource_id = obj.resource_key
+        resource_id = get_resource_id(obj)
 
-        op_type = "r" if action == Action.READ else "w"
+        if action == Action.READ:
+            op_type = "r"
+            self.transaction_manager.add_read_set(transaction_id, resource_id)
+        else:
+            op_type = "w"
+            self.transaction_manager.add_write_set(transaction_id, resource_id)
+            
         operation = Operation(transaction_id, op_type, resource_id)
 
         success, lock_holders = self.lock_manager.request_lock(operation)

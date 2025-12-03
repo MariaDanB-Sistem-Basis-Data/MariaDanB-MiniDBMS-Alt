@@ -1,17 +1,8 @@
-import random
-import time
+from typing import Any
 
-from ccm_model.Transaction import Transaction
 from ccm_model.Response import Response
-from ccm_model.Enums import Action, TransactionStatus
-from ccm_model.DeadlockDetector import DeadlockDetector
-from ccm_model.LockManager import LockManager
 from ccm_model.TransactionManager import TransactionManager
 from ccm_methods.ConcurrencyMethod import ConcurrencyMethod
-# sementara
-class Row:
-    def __init__(self, name: str):
-        self.name = name
 
 class ConcurrencyControlManager:
     def __init__(self):
@@ -31,14 +22,14 @@ class ConcurrencyControlManager:
 
         return transaction_id
     
-    def log_object(self, obj, transaction_id: int) -> None:
-        """Forward ke concurrency method."""
+    def log_object(self, obj: Any, transaction_id: int) -> None: # ini input obj nya nama tabel
+        """Forward ke concurrency method (obj bisa berupa nama tabel / resource id)."""
         if not self.concurrency_method:
             raise RuntimeError("Concurrency method belum diset!")
         return self.concurrency_method.log_object(obj, transaction_id)
     
-    def validate_object(self, obj, transaction_id: int, action):
-        """Forward ke concurrency method."""
+    def validate_object(self, obj: Any, transaction_id: int, action): # ini input obj nya nama tabel
+        """Forward ke concurrency method (obj bisa berupa nama tabel / resource id)."""
         if not self.concurrency_method:
             raise RuntimeError("Concurrency method belum diset!")
         return self.concurrency_method.validate_object(obj, transaction_id, action)
