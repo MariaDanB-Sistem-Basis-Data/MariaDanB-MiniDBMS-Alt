@@ -952,8 +952,8 @@ def _parse_from_clause(query: str) -> QueryTree:
     else:
         return _parse_table_with_alias(from_tables.strip())
 
-# parse table string dengan optional alias dan return TABLE node
 def _parse_table_with_alias(table_str: str) -> QueryTree:
+    # Coba cek apakah ada keyword AS
     if " AS " in table_str.upper():
         parts = re.split(r'\s+AS\s+', table_str, flags=re.IGNORECASE)
         table_name = parts[0].strip()
@@ -961,8 +961,22 @@ def _parse_table_with_alias(table_str: str) -> QueryTree:
         table_ref = TableReference(table_name, alias)
         return QueryTree(type="TABLE", val=table_ref)
     else:
-        table_ref = TableReference(table_str)
-        return QueryTree(type="TABLE", val=table_ref)
+        # Cek apakah ada spasi (kemungkinan alias tanpa AS)
+        parts = table_str.strip().split()
+        if len(parts) == 2:
+            # Format: table_name alias
+            table_name = parts[0].strip()
+            alias = parts[1].strip()
+            table_ref = TableReference(table_name, alias)
+            return QueryTree(type="TABLE", val=table_ref)
+        elif len(parts) == 1:
+            # Hanya nama tabel tanpa alias
+            table_ref = TableReference(table_str.strip())
+            return QueryTree(type="TABLE", val=table_ref)
+        else:
+            # Kasus lain, gunakan default (hanya nama tabel)
+            table_ref = TableReference(parts[0].strip())
+            return QueryTree(type="TABLE", val=table_ref)
 
 # helper untuk extract SET conditions dari UPDATE
 def _extract_set_conditions(query: str) -> list:
@@ -1147,19 +1161,44 @@ def parse_where_condition(where_str):
     # single comparison
     return _parse_single_condition(where_str)
 
-# split string by keyword while respecting nesting
+
 def _split_by_keyword(text, keyword):
     parts = []
     current = ""
     i = 0
+    in_single_quote = False
+    in_double_quote = False
+    paren_depth = 0
     
     while i < len(text):
-        if text[i:i+len(keyword)].upper() == keyword.upper():
+        char = text[i]
+        
+        # Track string literals
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current += char
+            i += 1
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current += char
+            i += 1
+        # Track parentheses depth
+        elif char == '(' and not in_single_quote and not in_double_quote:
+            paren_depth += 1
+            current += char
+            i += 1
+        elif char == ')' and not in_single_quote and not in_double_quote:
+            paren_depth -= 1
+            current += char
+            i += 1
+        # Check for keyword only if not inside quotes or nested parens
+        elif (not in_single_quote and not in_double_quote and paren_depth == 0 
+              and text[i:i+len(keyword)].upper() == keyword.upper()):
             parts.append(current.strip())
             current = ""
             i += len(keyword)
         else:
-            current += text[i]
+            current += char
             i += 1
     
     if current.strip():
@@ -1337,3 +1376,35 @@ def parse_insert_values_string(values_str):
             result.append(val_str)
     
     return result
+
+
+def _extract_upper_operators(node: QueryTree) -> list:
+    operators = []
+    current = node
+        
+    # Traverse dari root ke bawah
+    while current and current.type not in ["JOIN", "TABLE"]:
+        if current.type in ["PROJECT", "LIMIT", "SORT", "GROUP", "SIGMA"]:
+            op_copy = QueryTree(type=current.type, val=current.val)
+            operators.append(op_copy)
+        
+        if current.childs:
+            current = current.childs[0]
+        else:
+            break
+    
+    return operators
+
+def _reattach_upper_operators(join_tree: QueryTree, operators: list) -> QueryTree:
+    if not operators:
+        return join_tree
+    
+    current_root = join_tree
+    
+    # Attach operators dalam reverse order (bottom-up)
+    for op in reversed(operators):
+        new_node = QueryTree(type=op.type, val=op.val)
+        new_node.add_child(current_root)
+        current_root = new_node
+    
+    return current_root

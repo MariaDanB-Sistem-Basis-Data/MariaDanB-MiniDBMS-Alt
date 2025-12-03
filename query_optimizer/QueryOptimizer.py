@@ -46,7 +46,9 @@ from helper.helper import (
     parse_group_by_string,
     parse_insert_columns_string,
     parse_insert_values_string,
-    _theta_pred
+    _theta_pred,
+    _extract_upper_operators,
+    _reattach_upper_operators,
 )
 
 from helper.stats import get_stats
@@ -286,10 +288,14 @@ class OptimizationEngine:
         if len(tables) <= 1:
             return ParsedQuery(parsed_query.query, root)
 
-        # 5) BUILD JOIN CONDITIONS FROM CURRENT TREE
+        # 5) EXTRACT NON-JOIN OPERATORS (PROJECT, LIMIT, ORDER BY, GROUP BY, SIGMA)
+        # yang belum di-push ke bawah join tree
+        upper_operators = _extract_upper_operators(root)
+
+        # 6) BUILD JOIN CONDITIONS FROM CURRENT TREE
         join_conditions = self._extract_join_conditions_from_tree(root)
 
-        # 6) ORDER ENUMERATION & PLAN GENERATION
+        # 7) ORDER ENUMERATION & PLAN GENERATION
         orders = _some_permutations(tables, max_count=10)
         plans = []
         for order in orders:
@@ -300,12 +306,15 @@ class OptimizationEngine:
         if not plans:
             return ParsedQuery(parsed_query.query, root)
 
-        # 7) COST MODEL: PICK BEST PLAN
+        # 8) COST MODEL: PICK BEST PLAN
         stats = get_stats()
-        best = choose_best(plans, stats)
+        best_join_tree = choose_best(plans, stats)
 
-        # 8) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
-        return ParsedQuery(parsed_query.query, best)
+        # 9) REATTACH UPPER OPERATORS TO BEST JOIN TREE
+        final_tree = _reattach_upper_operators(best_join_tree, upper_operators)
+
+        # 10) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
+        return ParsedQuery(parsed_query.query, final_tree)
 
     def get_cost(self, parsed_query: ParsedQuery) -> int:
         if not parsed_query or not parsed_query.query_tree:
@@ -419,3 +428,4 @@ class OptimizationEngine:
 
         walk(node)
         return mapping
+    
