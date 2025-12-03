@@ -6,6 +6,8 @@ __all__ = ["ISchemaManager"]
 
 @runtime_checkable
 class ISchemaManager(Protocol):
+    schemas : dict
+    
     def list_tables(self) -> list[str]:
         ...
 
@@ -16,4 +18,7 @@ class ISchemaManager(Protocol):
         ...
 
     def save_schemas(self) -> None:
+        ...
+
+    def load_schemas(self) -> None:
         ...

@@ -806,7 +806,31 @@ class QueryProcessor:
         return Rows.from_list([f"Table '{table_name}' created successfully."])
 
     def execute_drop_table(self, query: str) -> Union[Rows, int]:
-        return Rows.from_list(["DROP TABLE - to be implemented (info cara drop tabel dari storagemngr)"])
+
+        # parse query
+        match = re.search(r"(?i)DROP\s+TABLE\s+([A-Za-z_]\w*)", query)
+        if not match:
+            return Rows.from_list(["Syntax Error: Invalid DROP TABLE format."])
+
+        table_name = match.group(1)
+
+        # delete .dat file
+        dat_path = f"./storage_manager/data/{table_name}.dat"
+        if os.path.exists(dat_path):
+            os.remove(dat_path)
+
+        # delete from schema
+        self.storage_manager.schema_manager.schemas.pop(table_name)
+        self.storage_manager.schema_manager.save_schemas()
+        self.storage_manager.schema_manager.load_schemas()
+
+        # delete from indexing (asumsikan tidak di indexing)
+
+        # detect if .dat is really has been deleted
+        if os.path.exists(dat_path):
+            return Rows.from_list([f"Table '{table_name}' is not deleted successfully."])
+
+        return Rows.from_list([f"Table '{table_name}' deleted successfully."])
 
 
 
