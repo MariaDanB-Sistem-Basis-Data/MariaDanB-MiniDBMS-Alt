@@ -702,6 +702,7 @@ class QueryProcessor:
         # save to Schema Manager
         self.storage_manager.schema_manager.add_table_schema(table_name, new_schema)
         self.storage_manager.schema_manager.save_schemas()
+        self.storage_manager.schema_manager.load_schemas()
 
         # physical data file 
         file_path = os.path.join(self.storage_manager.base_path, f"{table_name}.dat")
