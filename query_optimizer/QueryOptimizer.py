@@ -543,17 +543,14 @@ class OptimizationEngine:
         # TODO: ==================== [UNCOMMENT SAAT INTEGRASI SM] ====================
         # Uncomment blok di bawah untuk menggunakan StorageManager:
         #
-        try:
-            from storage_manager import StorageManager
-            from helper.cost import CostPlanner
-            
-            storage_manager = StorageManager(base_path='data')
-            cost_planner = CostPlanner(storage_manager=storage_manager)
-            
-            return cost_planner.get_cost(parsed_query)
+        # from storage_manager import StorageManager
+        # from helper.cost import CostPlanner
         
-        except ImportError:
-            pass
+        # storage_manager = StorageManager(base_path='storage_manager/data')
+        # cost_planner = CostPlanner(storage_manager=storage_manager)
+        
+        # return cost_planner.get_cost(parsed_query)
+        
         # ===========================================================================
         
         # Fallback to dummy stats
