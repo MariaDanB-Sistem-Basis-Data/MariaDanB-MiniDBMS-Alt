@@ -10,7 +10,7 @@ class ExecutionResult:
     transaction_id: int
     timestamp: datetime
     message: str
-    data: Union[Rows, int] # data can be either rows  or an int
+    data: List[Union[Rows, int]] # data can be either rows  or an int
     query: str
 
     def to_json_dict(self):
@@ -24,6 +24,14 @@ class ExecutionResult:
                 # Convert the list of generic items (T) into a list of dictionaries
                 "data": [item.__dict__ if hasattr(item, '__dict__') else item for item in self.data.data]
             }
+        elif isinstance(self.data, List[Union[Rows, int]]):
+            data_value = {
+                "type": "Rows",
+                "rows_count": self.data.rows_count,
+                # Convert the list of generic items (T) into a list of dictionaries
+                "data": [item.__dict__ if hasattr(item, '__dict__') else item for item in self.data.data]
+            }
+
         else:
             # data is a simple int (e.g., affected rows count)
             data_value = self.data

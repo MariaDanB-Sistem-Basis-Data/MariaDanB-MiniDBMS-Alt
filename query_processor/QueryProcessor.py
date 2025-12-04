@@ -17,6 +17,7 @@ from storage_manager.storagemanager_model.condition import Condition as cond
 from storage_manager.storagemanager_helper.schema import Schema as sch
 from query_optimizer.QueryOptimizer import OptimizationEngine as oe
 from query_optimizer.model.query_tree import QueryTree as qt
+from concurrency_control_manager.ConcurrencyControlManager import ConcurrencyControlManager
 
 class QueryProcessor:
     def __init__(
@@ -70,10 +71,10 @@ class QueryProcessor:
                 result_data = self.execute_drop_table(query)
 
             elif query_type == QueryType.BEGIN_TRANSACTION:
-                result_data =  self.execute_begin_transaction(query)
+                result_data =  self.execute_begin_transaction(query, transaction_id)
             
             elif query_type == QueryType.COMMIT:
-                result_data = self.execute_commit(query)
+                result_data = self.execute_commit(query, transaction_id)
 
             elif query_type == QueryType.ABORT:
                 result_data = self.execute_abort(query)
@@ -95,7 +96,7 @@ class QueryProcessor:
 
             # if result_data != error maybe
 
-            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Success", data=result_data, query=query)
+            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Success", data=list(result_data), query=query)
 
         except Exception as e:
             print(f"Error processing query: {e}")
@@ -835,26 +836,50 @@ class QueryProcessor:
 
 
     # placeholder BEGIN TRANSACTION
-    def execute_begin_transaction(self, query: str) -> Union[Rows, int]:
+    def execute_begin_transaction(self, query: str, transaction_id : int) -> List[Union[Rows, int]] | Union[Rows, int]:
 
-        # parse the query
+        # parse the queries
+        pattern = r"(?is)BEGIN\s+TRANSACTION\s+(.*?)\s+COMMIT\s*;"
+        match = re.search(pattern, query)
 
-        # init the transaction
+        if not match:
+            return Rows.from_list(["Syntax Error: Invalid BEGIN TRANSACTION .. COMMIT format."])
 
-        # detect every query needed
+        block = match.group(1).strip()
+
+        # detect every query needed by splitting by semicolon
+        statements = [
+            stmt.strip()
+            for stmt in block.split(';')
+            if stmt.strip()
+        ]
+
+        # init the transaction (done in the MiniDBMS.py)
 
         # for every query, execute thoroughly based on its type
-
-        return Rows.from_list(["BEGIN TRANSACTION - to be implemented"])
+        execResults = []
+        for s in statements:
+            execResults.append(self.execute_query(s))
+            
+        if not execResults :
+            return Rows.from_list([f"Transaction '{transaction_id}' began unsuccessfully."])
+        
+        return execResults
 
     # placeholder COMMIT 
-    def execute_commit(self, query : str) -> Union[Rows, int]:
+    def execute_commit(self, query : str, transaction_id : int) -> Union[Rows, int]:
 
         # parse the commit word
+        pattern = r"(?i)\bCOMMIT\s*;"
+        match = re.search(pattern, query)
+
+        if not match:
+            return Rows.from_list(["Syntax Error: Invalid COMMIT; format."])
 
         # deactivate the transaction id
+        self._transaction_active = False
 
-        return Rows.from_list(["COMMIT - to be implemented"])
+        return Rows.from_list([f"Transaction {transaction_id} COMMITED successfully."])
 
     # placeholder rollback
     def execute_rollback(self) -> Union[Rows, int]:
