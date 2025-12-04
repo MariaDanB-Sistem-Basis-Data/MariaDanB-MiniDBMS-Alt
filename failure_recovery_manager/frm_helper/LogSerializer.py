@@ -1,8 +1,11 @@
 import json
+import os
 from typing import List, Dict, Any
 from datetime import datetime
 from pathlib import Path
 import shutil
+import threading
+import hashlib
 
 from frm_model.LogEntry import LogEntry, LogEntryType
 from frm_model.Checkpoint import Checkpoint
@@ -11,6 +14,7 @@ from frm_model.Checkpoint import Checkpoint
 class LogSerializer:
     def __init__(self, logFilePath: str = "frm_logs/wal.log"):
         self._logFilePath = Path(logFilePath)
+        self._fileLock = threading.RLock()  # File-level lock
         self._ensureLogDirectory()
 
     def _ensureLogDirectory(self) -> None:
@@ -22,31 +26,54 @@ class LogSerializer:
         with self._logFilePath.open('a', encoding='utf-8') as f:
             json.dump(entryDict, f, ensure_ascii=False)
             f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
 
     def writeLogEntries(self, entries: List[Dict[str, Any]]) -> None:
         with self._logFilePath.open('a', encoding='utf-8') as f:
             for entry in entries:
                 json.dump(entry, f, ensure_ascii=False)
                 f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
 
     def readAllLogs(self) -> List[Dict[str, Any]]:
         if not self._logFilePath.exists():
             return []
 
-        entries = []
-        try:
-            with self._logFilePath.open('r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
-        except Exception:
-            return []
+        with self._fileLock:
+            entries = []
+            corrupted_count = 0
 
-        return entries
+            try:
+                with self._logFilePath.open('r', encoding='utf-8') as f:
+                    line_number = 0
+                    for line in f:
+                        line_number += 1
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except json.JSONDecodeError as e:
+                                corrupted_count += 1
+                                # print(f"[LogSerializer WARNING] Corrupted log entry at line {line_number}: {e}")
+                                # print(f"[LogSerializer WARNING] Corrupted line content: {line[:100]}...")
+                                continue
+
+            except FileNotFoundError:
+                print(f"[LogSerializer ERROR] Log file not found: {self._logFilePath}")
+                return []
+            except PermissionError as e:
+                print(f"[LogSerializer ERROR] Permission denied reading log file: {e}")
+                raise RuntimeError(f"Cannot read log file due to permissions: {e}")
+            except Exception as e:
+                print(f"[LogSerializer ERROR] Unexpected error reading logs: {e}")
+                raise RuntimeError(f"Failed to read log file: {e}")
+
+            if corrupted_count > 0:
+                print(f"[LogSerializer WARNING] Found {corrupted_count} corrupted log entries (skipped)")
+
+            return entries
 
     def readLogs(self) -> List[LogEntry]:
         raw = self.readAllLogs()
@@ -92,17 +119,61 @@ class LogSerializer:
         self._logFilePath.write_text("")
 
     def truncateLogsBefore(self, logId: int) -> None:
-        allLogs = self.readAllLogs()
-        filteredLogs = [log for log in allLogs if log.get("log_id", log.get("logId", 0)) >= logId]
+        with self._fileLock:
+            allLogs = self.readAllLogs()
+            filteredLogs = [log for log in allLogs if log.get("log_id", log.get("logId", 0)) >= logId]
 
-        # Rewrite file with filtered logs
-        self._logFilePath.write_text("")
-        self.writeLogEntries(filteredLogs)
+            temp_path = self._logFilePath.with_suffix('.tmp')
+
+            try:
+                with temp_path.open('w', encoding='utf-8') as f:
+                    for entry in filteredLogs:
+                        json.dump(entry, f, ensure_ascii=False)
+                        f.write('\n')
+                    f.flush()
+                    os.fsync(f.fileno())  # Force write to disk
+
+                if not temp_path.exists() or temp_path.stat().st_size == 0:
+                    raise RuntimeError("Temp file creation failed or empty")
+
+                temp_path.replace(self._logFilePath)
+
+                # # print(f"[LogSerializer] Truncated logs before ID {logId} (kept {len(filteredLogs)} entries)")
+
+            except Exception as e:
+                if temp_path.exists():
+                    temp_path.unlink()
+                print(f"[LogSerializer ERROR] Truncate failed: {e}")
+                raise RuntimeError(f"Failed to truncate logs atomically: {e}")
 
     def backupLogs(self, backupPath: str) -> None:
-        backupFile = Path(backupPath)
-        backupFile.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self._logFilePath, backupFile)
+        with self._fileLock:
+            backupFile = Path(backupPath)
+            backupFile.parent.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(self._logFilePath, backupFile)
+
+            original_size = self._logFilePath.stat().st_size
+            backup_size = backupFile.stat().st_size
+
+            if original_size != backup_size:
+                backupFile.unlink()
+                raise RuntimeError(
+                    f"Backup verification failed: size mismatch "
+                    f"(original={original_size}, backup={backup_size})"
+                )
+
+            original_checksum = self._computeFileChecksum(self._logFilePath)
+            backup_checksum = self._computeFileChecksum(backupFile)
+
+            if original_checksum != backup_checksum:
+                backupFile.unlink()
+                raise RuntimeError(
+                    f"Backup verification failed: checksum mismatch "
+                    f"(original={original_checksum[:8]}..., backup={backup_checksum[:8]}...)"
+                )
+
+            # # print(f"[LogSerializer] Backup created and verified: {backupPath} ({original_size} bytes)")
 
     def restoreLogs(self, backupPath: str) -> None:
         backupFile = Path(backupPath)
@@ -124,3 +195,10 @@ class LogSerializer:
         sizeBytes = self.getLogFileSize()
         sizeMb = sizeBytes / (1024 * 1024)
         return sizeMb > thresholdMb
+
+    def _computeFileChecksum(self, filePath: Path) -> str:
+        sha256 = hashlib.sha256()
+        with filePath.open('rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                sha256.update(chunk)
+        return sha256.hexdigest()

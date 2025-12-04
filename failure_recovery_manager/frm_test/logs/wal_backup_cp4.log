@@ -1,0 +1,13 @@
+{"logId": 64, "transactionId": 400, "timestamp": "2025-12-04T08:07:51.023890", "entryType": "commit", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 65, "transactionId": 401, "timestamp": "2025-12-04T08:07:51.209207", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 66, "transactionId": 401, "timestamp": "2025-12-04T08:07:51.209207", "entryType": "update", "dataItem": "inventory.stock[100]", "oldValue": 50, "newValue": 49, "undoNextLSN": null}
+{"logId": 67, "transactionId": 401, "timestamp": "2025-12-04T08:07:51.209207", "entryType": "commit", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 68, "transactionId": 402, "timestamp": "2025-12-04T08:07:51.275236", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 69, "transactionId": 402, "timestamp": "2025-12-04T08:07:51.275236", "entryType": "update", "dataItem": "accounts.balance[1]", "oldValue": 100, "newValue": 50, "undoNextLSN": null}
+{"logId": 70, "transactionId": 402, "timestamp": "2025-12-04T08:07:51.275236", "entryType": "abort", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 71, "transactionId": 500, "timestamp": "2025-12-04T08:07:51.343182", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 72, "transactionId": 501, "timestamp": "2025-12-04T08:07:51.343182", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 73, "transactionId": 502, "timestamp": "2025-12-04T08:07:51.343182", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 74, "transactionId": 503, "timestamp": "2025-12-04T08:07:51.343182", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 75, "transactionId": 504, "timestamp": "2025-12-04T08:07:51.343182", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"type": "checkpoint", "checkpointId": 4, "timestamp": "2025-12-04T08:07:51.409174", "activeTransactions": [], "lastLogId": 75}

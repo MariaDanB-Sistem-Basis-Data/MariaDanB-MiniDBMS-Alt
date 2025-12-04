@@ -14,28 +14,84 @@ class MiniDBMS:
         self._deps = deps
         self.query_processor = deps.query_processor_factory()
         self.concurrency_manager = deps.concurrency_control_cls()
-        
 
-        # inisialisasi metode concurrency control, misal Two-Phase Locking
         try:
             import sys
             from pathlib import Path
             ccm_path = Path(__file__).parent / "Concurrency-Control-Manager"
             if str(ccm_path) not in sys.path:
                 sys.path.insert(0, str(ccm_path))
-            
+
             from ccm_methods.TwoPhaseLocking import TwoPhaseLocking  # type: ignore
             self.concurrency_manager.set_method(TwoPhaseLocking())
         except (ImportError, AttributeError):
-            pass  
-        
+            pass
+
         self.failure_recovery_manager = deps.failure_recovery_factory()
+
+        self._integrate_components()
+
         self._rows_cls = deps.rows_cls
         self._execution_result_cls = deps.execution_result_cls
         self._query_type_enum = deps.query_type_enum
         self._get_query_type = deps.query_type_resolver
         self._active_transactions: set[int] = set()
         self._latest_transaction_id: Optional[int] = None
+
+    def _integrate_components(self) -> None:
+        storage_manager = getattr(self.query_processor, 'storage_manager', None)
+
+        if storage_manager and self.failure_recovery_manager:
+            self.failure_recovery_manager.configure_storage_manager(
+                flush_callback=storage_manager.flush_buffer_to_disk,
+                read_callback=storage_manager.read_table_from_disk
+            )
+
+            storage_manager.frm_instance = self.failure_recovery_manager
+            storage_manager.recovery_enabled = True
+
+            print("[MiniDBMS] FRM <-> SM integration completed")
+
+            print("[MiniDBMS] ========== STARTUP RECOVERY ==========")
+            print("[MiniDBMS] Checking for incomplete transactions from previous session...")
+
+            try:
+                recovery_result = self.failure_recovery_manager.recoverFromSystemFailure()
+
+                if recovery_result:
+                    committed = recovery_result.get('committed_transactions', [])
+                    aborted = recovery_result.get('aborted_transactions', [])
+                    losers = recovery_result.get('loser_transactions', [])
+                    redo_count = len(recovery_result.get('redo_operations', []))
+                    undo_count = len(recovery_result.get('undo_operations', []))
+
+                    if redo_count > 0 or undo_count > 0 or losers:
+                        print(f"[MiniDBMS] RECOVERY PERFORMED:")
+                        print(f"[MiniDBMS]   - Redo operations: {redo_count}")
+                        print(f"[MiniDBMS]   - Undo operations: {undo_count}")
+                        print(f"[MiniDBMS]   - Committed: {committed}")
+                        print(f"[MiniDBMS]   - Aborted: {aborted}")
+                        print(f"[MiniDBMS]   - Rolled back: {losers}")
+                    else:
+                        print("[MiniDBMS] No recovery needed - database was cleanly shutdown")
+
+                    print("[MiniDBMS] ========== RECOVERY COMPLETE ==========")
+                else:
+                    print("[MiniDBMS] No recovery needed - no previous failures detected")
+                    print("[MiniDBMS] ========================================")
+
+            except Exception as e:
+                print(f"[MiniDBMS CRITICAL ERROR] Startup recovery failed: {e}")
+                print(f"[MiniDBMS CRITICAL ERROR] Database may be in inconsistent state!")
+                print(f"[MiniDBMS CRITICAL ERROR] Manual intervention may be required")
+                import traceback
+                traceback.print_exc()
+
+        if hasattr(self.concurrency_manager, 'failure_recovery_manager'):
+            self.concurrency_manager.failure_recovery_manager = self.failure_recovery_manager
+            if hasattr(self.concurrency_manager, 'transaction_manager'):
+                self.concurrency_manager.transaction_manager.recovery_manager = self.failure_recovery_manager
+            print("[MiniDBMS] FRM <-> CCM integration completed")
 
     def execute(self, query: str) -> Any:
         query_type = self._get_query_type(query)
