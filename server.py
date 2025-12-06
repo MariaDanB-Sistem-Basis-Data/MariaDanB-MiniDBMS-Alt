@@ -151,6 +151,161 @@ class DBMSServer:
                     "message": f"Checkpoint failed: {str(e)}"
                 }
         
+        elif request_type == "list_tables":
+            try:
+                storage_manager = getattr(self.dbms.query_processor, 'storage_manager', None)
+                if storage_manager and hasattr(storage_manager, 'schema_manager'):
+                    tables = storage_manager.schema_manager.list_tables()
+                    return {
+                        "type": "list_tables",
+                        "tables": sorted(list(tables)) if tables else []
+                    }
+                else:
+                    return {
+                        "type": "error",
+                        "message": "Storage manager not available"
+                    }
+            except Exception as e:
+                return {
+                    "type": "error",
+                    "message": f"Failed to list tables: {str(e)}"
+                }
+        
+        elif request_type == "describe_table":
+            try:
+                table_name = request.get("table_name", "")
+                if not table_name:
+                    return {
+                        "type": "error",
+                        "message": "Table name required"
+                    }
+                
+                storage_manager = getattr(self.dbms.query_processor, 'storage_manager', None)
+                if storage_manager and hasattr(storage_manager, 'schema_manager'):
+                    schema = storage_manager.schema_manager.get_table_schema(table_name)
+                    if schema:
+                        attributes = []
+                        if hasattr(schema, 'attributes'):
+                            for attr in schema.attributes:
+                                attributes.append({
+                                    "name": attr.get('name', 'unknown'),
+                                    "type": attr.get('type', 'unknown')
+                                })
+                        
+                        stats = storage_manager.get_stats(table_name)
+                        stats_dict = {}
+                        if stats:
+                            stats_dict = {
+                                "n_r": getattr(stats, 'n_r', None),
+                                "b_r": getattr(stats, 'b_r', None),
+                                "f_r": getattr(stats, 'f_r', None)
+                            }
+                        
+                        return {
+                            "type": "describe_table",
+                            "table_name": table_name,
+                            "attributes": attributes,
+                            "stats": stats_dict
+                        }
+                    else:
+                        return {
+                            "type": "error",
+                            "message": f"Table '{table_name}' not found"
+                        }
+                else:
+                    return {
+                        "type": "error",
+                        "message": "Storage manager not available"
+                    }
+            except Exception as e:
+                return {
+                    "type": "error",
+                    "message": f"Failed to describe table: {str(e)}"
+                }
+        
+        elif request_type == "list_transactions":
+            try:
+                transactions = []
+                if hasattr(self.dbms, '_active_transactions') and self.dbms._active_transactions:
+                    if hasattr(self.dbms, 'concurrency_manager') and hasattr(self.dbms.concurrency_manager, 'transaction_manager'):
+                        tx_manager = self.dbms.concurrency_manager.transaction_manager
+                        for tx_id in sorted(self.dbms._active_transactions):
+                            tx_info = {"transaction_id": tx_id, "status": "ACTIVE", "start_time": None}
+                            if hasattr(tx_manager, 'get_transaction'):
+                                tx = tx_manager.get_transaction(tx_id)
+                                if tx:
+                                    tx_info["status"] = str(tx.status.name if hasattr(tx.status, 'name') else tx.status)
+                                    if hasattr(tx, 'start_time'):
+                                        tx_info["start_time"] = tx.start_time.isoformat()
+                            transactions.append(tx_info)
+                    else:
+                        for tx_id in sorted(self.dbms._active_transactions):
+                            transactions.append({"transaction_id": tx_id, "status": "ACTIVE", "start_time": None})
+                
+                return {
+                    "type": "list_transactions",
+                    "transactions": transactions,
+                    "count": len(transactions)
+                }
+            except Exception as e:
+                return {
+                    "type": "error",
+                    "message": f"Failed to list transactions: {str(e)}"
+                }
+        
+        elif request_type == "explain":
+            try:
+                query = request.get("query", "").strip()
+                if not query:
+                    return {
+                        "type": "error",
+                        "message": "Query required for EXPLAIN"
+                    }
+                
+                if not query.endswith(";"):
+                    query = query + ";"
+                
+                if not query.upper().startswith("SELECT"):
+                    return {
+                        "type": "error",
+                        "message": "EXPLAIN only supports SELECT queries"
+                    }
+                
+                optimizer = getattr(self.dbms.query_processor, 'optimization_engine', None)
+                if not optimizer:
+                    return {
+                        "type": "error",
+                        "message": "Query optimizer not available"
+                    }
+                
+                parsed = optimizer.parse_query(query)
+                cost_before = optimizer.get_cost(parsed) if parsed else 0
+                
+                optimized = optimizer.optimize_query(parsed)
+                cost_after = optimizer.get_cost(optimized) if optimized else 0
+                
+                improvement = 0
+                if cost_before > 0 and cost_after > 0:
+                    improvement = ((cost_before - cost_after) / cost_before) * 100
+                
+                optimization_info = {}
+                if hasattr(optimizer, 'last_optimization_info') and optimizer.last_optimization_info:
+                    optimization_info = optimizer.last_optimization_info
+                
+                return {
+                    "type": "explain",
+                    "query": query.rstrip(";"),
+                    "cost_before": cost_before,
+                    "cost_after": cost_after,
+                    "improvement_percent": improvement,
+                    "optimization_info": optimization_info
+                }
+            except Exception as e:
+                return {
+                    "type": "error",
+                    "message": f"EXPLAIN failed: {str(e)}"
+                }
+        
         elif request_type == "ping":
             return {
                 "type": "pong",
