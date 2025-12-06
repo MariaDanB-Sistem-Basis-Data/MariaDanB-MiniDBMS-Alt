@@ -81,6 +81,66 @@ class DBMSClient:
             print(f"[Client Error] Checkpoint failed: {e}")
             return None
     
+    def list_tables(self) -> Optional[Dict[str, Any]]:
+        """Get list of all tables from server."""
+        if not self.connected:
+            print("[Client Error] Not connected to server")
+            return None
+        
+        try:
+            request = {"type": "list_tables"}
+            self._send_request(request)
+            response = self._receive_response()
+            return response
+        except Exception as e:
+            print(f"[Client Error] Failed to list tables: {e}")
+            return None
+    
+    def describe_table(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """Get table schema and statistics."""
+        if not self.connected:
+            print("[Client Error] Not connected to server")
+            return None
+        
+        try:
+            request = {"type": "describe_table", "table_name": table_name}
+            self._send_request(request)
+            response = self._receive_response()
+            return response
+        except Exception as e:
+            print(f"[Client Error] Failed to describe table: {e}")
+            return None
+    
+    def list_transactions(self) -> Optional[Dict[str, Any]]:
+        """Get list of active transactions."""
+        if not self.connected:
+            print("[Client Error] Not connected to server")
+            return None
+        
+        try:
+            request = {"type": "list_transactions"}
+            self._send_request(request)
+            response = self._receive_response()
+            return response
+        except Exception as e:
+            print(f"[Client Error] Failed to list transactions: {e}")
+            return None
+    
+    def explain_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """Get query execution plan and cost analysis."""
+        if not self.connected:
+            print("[Client Error] Not connected to server")
+            return None
+        
+        try:
+            request = {"type": "explain", "query": query}
+            self._send_request(request)
+            response = self._receive_response()
+            return response
+        except Exception as e:
+            print(f"[Client Error] EXPLAIN failed: {e}")
+            return None
+    
     def ping(self) -> bool:
         if not self.connected:
             return False
@@ -143,6 +203,107 @@ def print_result(response: Optional[Dict[str, Any]]):
         print(f"  [Checkpoint] {message} - {'Success' if success else 'Failed'}")
         return
     
+    if response_type == "list_tables":
+        tables = response.get("tables", [])
+        if tables:
+            print("\n  Tables:")
+            print("  +-" + "-" * 30 + "-+")
+            print("  | " + "Table Name".ljust(30) + " |")
+            print("  +-" + "-" * 30 + "-+")
+            for table in tables:
+                print("  | " + table.ljust(30) + " |")
+            print("  +-" + "-" * 30 + "-+")
+        else:
+            print("  No tables found.")
+        return
+    
+    if response_type == "describe_table":
+        table_name = response.get("table_name", "")
+        attributes = response.get("attributes", [])
+        stats = response.get("stats", {})
+        
+        print(f"\n  Table: {table_name}")
+        print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 10 + "-+")
+        print("  | " + "Column".ljust(20) + " | " + "Type".ljust(15) + " | " + "Key".ljust(10) + " |")
+        print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 10 + "-+")
+        
+        for attr in attributes:
+            col_name = attr.get("name", "unknown")
+            col_type = attr.get("type", "unknown")
+            print("  | " + col_name.ljust(20) + " | " + col_type.ljust(15) + " | " + "".ljust(10) + " |")
+        
+        print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 10 + "-+")
+        
+        if stats:
+            print(f"\n  Statistics:")
+            if stats.get("n_r") is not None:
+                print(f"    Rows: {stats.get('n_r')}")
+            if stats.get("b_r") is not None:
+                print(f"    Blocks: {stats.get('b_r')}")
+            if stats.get("f_r") is not None:
+                print(f"    Block factor: {stats.get('f_r')}")
+        return
+    
+    if response_type == "list_transactions":
+        transactions = response.get("transactions", [])
+        count = response.get("count", 0)
+        
+        if transactions:
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            print("  | " + "Transaction ID".ljust(20) + " | " + "Status".ljust(15) + " | " + "Start Time".ljust(25) + " |")
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            
+            for tx in transactions:
+                tx_id = str(tx.get("transaction_id", ""))
+                status = tx.get("status", "ACTIVE")
+                start_time = tx.get("start_time", "N/A")
+                if start_time and start_time != "N/A":
+                    # Format ISO datetime to readable format
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(start_time)
+                        start_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except:
+                        pass
+                print("  | " + tx_id.ljust(20) + " | " + status.ljust(15) + " | " + start_time.ljust(25) + " |")
+            
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            print(f"  Total: {count} active transaction(s)")
+        else:
+            print("  No active transactions.")
+        return
+    
+    if response_type == "explain":
+        query = response.get("query", "")
+        cost_before = response.get("cost_before", 0)
+        cost_after = response.get("cost_after", 0)
+        improvement = response.get("improvement_percent", 0)
+        opt_info = response.get("optimization_info", {})
+        
+        print(f"\n  Query: {query}")
+        print("\n  " + "=" * 70)
+        print(f"\n  Estimated Cost (before optimization): {cost_before}")
+        print(f"  Estimated Cost (after optimization): {cost_after}")
+        
+        if improvement > 0:
+            print(f"  Cost reduction: {improvement:.1f}%")
+        
+        if opt_info:
+            print("\n  Optimization Details:")
+            if 'method' in opt_info:
+                print(f"      Method: {opt_info['method']}")
+            if 'join_order' in opt_info:
+                print(f"      Join order: {opt_info['join_order']}")
+            if 'heuristics_applied' in opt_info:
+                heuristics = opt_info['heuristics_applied']
+                if isinstance(heuristics, list):
+                    print(f"      Heuristics: {', '.join(heuristics)}")
+                else:
+                    print(f"      Heuristics: {heuristics}")
+        
+        print("\n  " + "=" * 70)
+        return
+    
     if response_type == "result":
         transaction_id = response.get("transaction_id", -1)
         message = response.get("message", "")
@@ -198,9 +359,14 @@ def run_interactive(client: DBMSClient):
     print("\n=== MiniDBMS Client Interactive Shell ===")
     print("Commands:")
     print("  - Type SQL queries ending with semicolon (;)")
-    print("  - \\checkpoint  - Force checkpoint on server")
-    print("  - \\ping        - Check server connection")
-    print("  - exit or quit - Disconnect and exit")
+    print("  - \\dt              - List all tables")
+    print("  - \\d <table>       - Describe table schema")
+    print("  - \\tx              - View active transactions")
+    print("  - explain <query>  - Show query execution plan")
+    print("  - \\checkpoint      - Force checkpoint on server")
+    print("  - \\ping            - Check server connection")
+    print("  - \\help            - Show this help")
+    print("  - exit or quit     - Disconnect and exit")
     print()
     
     buffer = []
@@ -230,18 +396,70 @@ def run_interactive(client: DBMSClient):
         if not buffer and stripped.lower() in {"exit", "quit"}:
             break
         
-        # Special commands
-        if not buffer and stripped == "\\checkpoint":
-            response = client.checkpoint()
-            print_result(response)
-            continue
-        
-        if not buffer and stripped == "\\ping":
-            if client.ping():
-                print("  [Ping] Server is responding")
-            else:
-                print("  [Ping] Server is not responding")
-            continue
+        # Special commands (only when buffer is empty)
+        if not buffer:
+            parts = stripped.split()
+            if parts:
+                cmd = parts[0].lower()
+                
+                # \dt - List tables
+                if cmd == "\\dt":
+                    response = client.list_tables()
+                    print_result(response)
+                    continue
+                
+                # \d <table> - Describe table
+                if cmd == "\\d":
+                    if len(parts) < 2:
+                        print("  Usage: \\d <table_name>")
+                    else:
+                        response = client.describe_table(parts[1])
+                        print_result(response)
+                    continue
+                
+                # \tx - List transactions
+                if cmd in ("\\tx", "\\transactions"):
+                    response = client.list_transactions()
+                    print_result(response)
+                    continue
+                
+                # explain <query> - Explain query
+                if cmd == "explain":
+                    if len(parts) < 2:
+                        print("  Usage: explain <query>")
+                        print("  Example: explain SELECT * FROM Student WHERE GPA > 3.0")
+                    else:
+                        query = " ".join(parts[1:]).strip()
+                        response = client.explain_query(query)
+                        print_result(response)
+                    continue
+                
+                # \checkpoint - Force checkpoint
+                if cmd == "\\checkpoint":
+                    response = client.checkpoint()
+                    print_result(response)
+                    continue
+                
+                # \ping - Ping server
+                if cmd == "\\ping":
+                    if client.ping():
+                        print("  [Ping] Server is responding")
+                    else:
+                        print("  [Ping] Server is not responding")
+                    continue
+                
+                # \help - Show help
+                if cmd == "\\help":
+                    print("\n  Special Commands:")
+                    print("    \\dt                - List all tables")
+                    print("    \\d <table>         - Describe table schema")
+                    print("    \\tx, \\transactions - View active transactions")
+                    print("    explain <query>    - Show query execution plan and cost")
+                    print("    \\checkpoint        - Force checkpoint")
+                    print("    \\ping              - Check server connection")
+                    print("    \\help              - Show this help message")
+                    print("    exit or quit       - Exit the shell\n")
+                    continue
         
         # Build query buffer
         buffer.append(line)
