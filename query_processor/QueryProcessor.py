@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Callable, Union, List, cast
 import re
 import os
+import copy
 
 from qp_model.ExecutionResult import ExecutionResult
 from qp_model.Rows import Rows
@@ -439,6 +440,8 @@ class QueryProcessor:
         left_rows = left.data
         right_rows = right.data
 
+        # print(left_rows[0])
+
         left_table = left.table_source
         right_table = right.table_source
 
@@ -446,10 +449,15 @@ class QueryProcessor:
 
         conds = condition.condition
         conds_left_table = conds.attr.table
-        conds_right_table = conds.value.table
+        try:
+            conds_right_table = conds.value.table
+        except:
+            conds_right_table = ""
 
         if conds_left_table == right_table or conds_right_table == left_table:
             left_rows, right_rows = right_rows, left_rows
+
+        common_cols = set(left_rows[0].keys()) & set(right_rows[0].keys())
 
         # join rows berdasarkan kondisi
         for left_row in left_rows:
@@ -459,14 +467,27 @@ class QueryProcessor:
                         left_val = left_row[conds.attr.column]
                         
                         # cek apakah right_col_or_value adalah kolom di right_row
-                        if conds.value.column in right_row:
+                        try:
                             right_val = right_row[conds.value.column]
-                        else:
+                        except:
                             right_val = conds.value
 
                         # evaluasi condition
                         if self._evaluate_condition(left_val, conds.op, right_val):
-                            combined = {**left_row, **right_row}
+
+                            left_row_final = copy.deepcopy(left_row)
+                            right_row_final = copy.deepcopy(right_row)
+
+                            for col in common_cols:
+                                try:
+                                    need_new = (col != conds.attr.column or conds.attr.column != conds.value.column)
+                                except:
+                                    need_new = True
+                                if col != "_lsn" and need_new:
+                                    left_row_final[col + "_1"] = left_row_final.pop(col)
+                                    right_row_final[col + "_2"] = right_row_final.pop(col)
+
+                            combined = {**left_row_final, **right_row_final}
                             result.append(combined)
         
         return Rows.from_list(result)
