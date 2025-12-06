@@ -47,7 +47,7 @@ class StorageManager:
             if hasattr(self.frm_instance, 'setReadMethod'):
                 self.frm_instance.setReadMethod(self.read_table_from_disk)
 
-        self.recovery_enabled = True
+        # self.recovery_enabled = True # ini harusnya cuma lewat constructor aja
 
     def _get_table_file_path(self, table_name: str) -> str:
         exact_path = os.path.join(self.base_path, f"{table_name}.dat")
@@ -299,7 +299,7 @@ class StorageManager:
 
     def _insert_record(self, table_path, schema, new_record):
         sanitized_record = {k: v for k, v in new_record.items() if k != '_lsn'}
-        if '_lsn' in new_record and hasattr(self, 'frm') and self.frm:
+        if '_lsn' in new_record and hasattr(self, 'frm_instance') and self.frm_instance:
             sanitized_record['_lsn'] = new_record['_lsn']
 
         record_bytes = self.row_serializer.serialize(schema, sanitized_record)
@@ -657,10 +657,8 @@ class StorageManager:
         dirty_entries = self.frm_instance.get_dirty_buffer_entries()
 
         if not dirty_entries:
-            # # print("[SM] No dirty entries to flush")
             return
 
-        # # print(f"[SM] Flushing {len(dirty_entries)} dirty entries to disk...")
 
         flushed_entries = []
 
@@ -672,13 +670,11 @@ class StorageManager:
                 self._write_buffer_row_to_disk(table_name, data)
                 flushed_entries.append(entry)
 
-            # Only mark as clean if ALL writes succeeded
             for entry in flushed_entries:
                 table_name = entry['key']
                 data = entry['data']
                 self.frm_instance.put_buffer_entry(table_name, data, is_dirty=False)
 
-            # # print(f"[SM] Flush completed successfully: {len(flushed_entries)} entries written")
 
         except Exception as e:
             print(f"[SM ERROR] Flush failed after {len(flushed_entries)}/{len(dirty_entries)} entries: {e}")
@@ -711,10 +707,9 @@ class StorageManager:
                 if current_row is not None:
                     disk_lsn = current_row.get('_lsn', 0)
 
-                    if buffer_lsn < disk_lsn:
-                        #print(f"[SM LSN SAFETY] Skipping write for {table_name}[{primary_key_col}={pk_value}]: " f"buffer LSN {buffer_lsn} < disk LSN {disk_lsn}")
+                    if buffer_lsn <= disk_lsn:
                         rows_skipped += 1
-                        continue  # Skip this write - disk has newer data!
+                        continue  
 
                 # Proceed with write
                 conditions = [Condition(column=primary_key_col, operation='=', operand=pk_value)]
@@ -722,18 +717,19 @@ class StorageManager:
                 columns = list(data.keys())
                 columns = [col for col in columns if col != '_lsn']
 
+                filtered_data = {k: v for k, v in data.items() if k != '_lsn'}
+
                 write_request = DataWrite(
                     table=table_name,
                     column=columns,
                     conditions=conditions,
-                    new_value=data
+                    new_value=filtered_data
                 )
 
                 self.write_block(write_request)
                 rows_written += 1
 
         if rows_skipped > 0:
-            #print(f"[SM LSN SAFETY] Flush summary for {table_name}: {rows_written} written, {rows_skipped} skipped (LSN protection)")
             pass
 
     def read_table_from_disk(self, table_name: str):
@@ -743,7 +739,6 @@ class StorageManager:
         try:
             schema = self.schema_manager.get_table_schema(table_name)
             if schema is None:
-                # print(f"[SM WARNING] Table '{table_name}' not found")
                 return None
 
             retrieval_request = DataRetrieval(
@@ -756,11 +751,9 @@ class StorageManager:
             rows = self.read_block(retrieval_request)
             self.frm_instance.put_buffer_entry(table_name, rows, is_dirty=False)
 
-            # # print(f"[SM] Read {len(rows)} rows from table '{table_name}' into buffer")
             return rows
 
         except Exception as e:
-            # print(f"[SM ERROR] Failed to read table '{table_name}': {e}")
             return None
 
     def put_disk_to_buffer(self, table_name):
