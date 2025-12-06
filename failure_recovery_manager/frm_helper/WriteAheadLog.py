@@ -1,5 +1,8 @@
 from typing import List, Optional
 from datetime import datetime
+import os
+import threading
+from pathlib import Path
 
 from frm_model.LogEntry import LogEntry, LogEntryType
 from frm_model.Checkpoint import Checkpoint
@@ -13,10 +16,29 @@ class WriteAheadLog:
 
     def __init__(self, logFilePath: str = "frm_logs/wal.log"):
         if not hasattr(self, 'initialized'):
+            if not os.path.isabs(logFilePath):
+                import inspect
+                frames = inspect.stack()
+                is_test = any('unittest' in frame.filename or 'UnitTest' in frame.filename for frame in frames)
+
+                if is_test:
+                    frm_root = Path(__file__).resolve().parent.parent
+                    logFilePath = str(frm_root / logFilePath)
+                else:
+                    current = Path(__file__).resolve().parent
+                    while current.name != 'MariaDanB-MiniDBMS-Alt' and current.parent != current:
+                        current = current.parent
+                    project_root = current
+                    logFilePath = str(project_root / logFilePath)
+
+            self.logFilePath = logFilePath
             self._logSerializer = LogSerializer(logFilePath)
             self._currentLogId = 0
             self._currentCheckpointId = 0
             self._logBuffer: Buffer[LogEntry] = Buffer()
+            self._logIdLock = threading.Lock()
+            self._checkpointIdLock = threading.Lock()
+
             self.initialized = True
             self._loadCurrentState()
 
@@ -28,14 +50,19 @@ class WriteAheadLog:
         if checkpoints:
             self._currentCheckpointId = max(cp.getCheckpointId() for cp in checkpoints)
 
-    def appendLog(self, entry: LogEntry) -> None:
+    def appendLog(self, entry: LogEntry, forceFlush: bool = False) -> None:
         key = str(entry.getLogId())
         self._logBuffer.put(key, entry, isDirty=True)
 
+        if forceFlush or entry.getEntryType() in (LogEntryType.COMMIT, LogEntryType.ABORT, LogEntryType.END):
+            # print(f"[WAL] Force flushing {entry.getEntryType().value} log for durability")
+            self.flushBuffer()
+
 
     def getNextLogId(self) -> int:
-        self._currentLogId += 1
-        return self._currentLogId
+        with self._logIdLock:
+            self._currentLogId += 1
+            return self._currentLogId
 
     def getLogsForTransaction(self, transactionId: int) -> List[LogEntry]:
         entries = self._logSerializer.readLogs()
@@ -57,14 +84,20 @@ class WriteAheadLog:
         return max(cps, key=lambda cp: cp.getCheckpointId())
 
     def createCheckpoint(self, activeTransactions: List[int]) -> Checkpoint:
-        self._currentCheckpointId += 1
-        now = datetime.now()
-        lastLogId = self._currentLogId
+        # Atomically read and increment checkpoint ID
+        with self._checkpointIdLock:
+            self._currentCheckpointId += 1
+            checkpoint_id = self._currentCheckpointId
+
+        # Atomically read current log ID
+        with self._logIdLock:
+            last_log_id = self._currentLogId
+
         checkpoint = Checkpoint(
-            checkpointId=self._currentCheckpointId,
-            timestamp=now,
+            checkpointId=checkpoint_id,
+            timestamp=datetime.now(),
             activeTransactions=activeTransactions,
-            lastLogId=lastLogId,
+            lastLogId=last_log_id,  # Last assigned log ID
         )
         self._logSerializer.writeLogEntry(checkpoint.toDict())
         return checkpoint
@@ -89,8 +122,27 @@ class WriteAheadLog:
         checkpoints = self._logSerializer.readCheckpoints()
         checkpoint = next((cp for cp in checkpoints if cp.getCheckpointId() == checkpointId), None)
         if not checkpoint:
+            print(f"[WAL WARNING] Checkpoint {checkpointId} not found, skipping truncate")
             return
-        self._logSerializer.truncateLogsBefore(checkpoint.getLastLogId())
+
+        backup_path = f"frm_logs/wal_backup_cp{checkpointId}.log"
+
+        try:
+            # print(f"[WAL] Creating backup before truncate: {backup_path}")
+            self._logSerializer.backupLogs(backup_path)
+            # print(f"[WAL] Backup verified successfully")
+        except Exception as e:
+            print(f"[WAL ERROR] Backup failed - ABORTING truncate to prevent data loss!")
+            print(f"[WAL ERROR] Error: {e}")
+            raise RuntimeError(f"Cannot truncate logs: backup failed - {e}")
+
+        try:
+            # print(f"[WAL] Backup verified, proceeding with truncate...")
+            self._logSerializer.truncateLogsBefore(checkpoint.getLastLogId())
+            # print(f"[WAL] Truncate completed successfully")
+        except Exception as e:
+            print(f"[WAL ERROR] Truncate failed (backup is safe at {backup_path}): {e}")
+            raise RuntimeError(f"Truncation failed: {e}")
 
     def verifyLogIntegrity(self) -> bool:
         entries = self._logSerializer.readLogs()
