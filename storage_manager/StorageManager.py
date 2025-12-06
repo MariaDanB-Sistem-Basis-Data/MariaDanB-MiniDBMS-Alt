@@ -15,7 +15,7 @@ class StorageManager:
     def __init__(self, base_path='data', frm_instance=None, recovery_enabled=False):
         self.base_path = base_path
         self.storage_path = base_path
-        self.row_serializer = RowSerializer()
+        self.row_serializer = RowSerializer(with_lsn=(frm_instance is not None or recovery_enabled))
         self.schema_manager = SchemaManager(base_path)
         self.hash_index_manager = HashIndexManager(base_path)
         self.bplus_tree_index_manager = BPlusTreeIndexManager(base_path)
