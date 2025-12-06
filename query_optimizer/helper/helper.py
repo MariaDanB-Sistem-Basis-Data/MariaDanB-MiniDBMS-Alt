@@ -62,18 +62,23 @@ def _find_node(tree: QueryTree, node_type: str):
     return None
 
 def _tables_under(node: QueryTree):
-    """Extract all table names from a query tree"""
     out = []
+
     def dfs(n):
         if n.type == "TABLE":
-            if isinstance(n.val, TableReference):
-                out.append(n.val)
-            else:
-                out.append(n.val)
+            out.append(n.val)
         for c in n.childs:
             dfs(c)
-    dfs(node)
-    return set(out)
+
+    seen = set()
+    unique = []
+    for x in out:
+        name = x.name if hasattr(x, "name") else str(x)
+        if name not in seen:
+            seen.add(name)
+            unique.append(x)
+
+    return unique
 
 # σθ(E1 × E2)  ⇒  E1 ⋈θ E2
 def fold_selection_with_cartesian(node: QueryTree):
