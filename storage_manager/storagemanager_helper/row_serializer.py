@@ -1,11 +1,17 @@
 from .data_encoder import DataEncoder
 
 class RowSerializer:
-    def __init__(self):
+    def __init__(self, with_lsn=True):
         self.encoder = DataEncoder()
+        self.with_lsn = with_lsn
 
     def serialize(self, schema, record):
         byte_array = bytearray()
+
+        if self.with_lsn:
+            lsn = record.get('_lsn', 0)
+            byte_array += self.encoder.encode_int(int(lsn))
+
         fields = schema.get_attributes()
 
         for field in fields:
@@ -27,6 +33,18 @@ class RowSerializer:
     def deserialize(self, schema, byte_data):
         record = {}
         offset = 0
+
+        # Read LSN if enabled
+        if self.with_lsn:
+            try:
+                lsn, offset = self.encoder.decode_int(byte_data, offset)
+                record['_lsn'] = lsn
+            except Exception as e:
+                record['_lsn'] = 0
+                offset = 0
+                print(f"[RowSerializer] Warning: Could not read LSN, assuming 0: {e}")
+        else:
+            record['_lsn'] = 0
 
         fields = schema.get_attributes()
 

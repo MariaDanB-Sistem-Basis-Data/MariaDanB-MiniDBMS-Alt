@@ -9,41 +9,75 @@ from storagemanager_model.data_retrieval import DataRetrieval
 from storagemanager_model.data_write import DataWrite
 from storagemanager_model.index import HashIndexEntry
 from storagemanager_helper.index import HashIndexManager, BPlusTreeIndexManager
+
+
 class StorageManager:
-    def __init__(self, base_path='data', frm_instance=None):
+    def __init__(self, base_path='data', frm_instance=None, recovery_enabled=False):
         self.base_path = base_path
         self.storage_path = base_path
         self.row_serializer = RowSerializer()
         self.schema_manager = SchemaManager(base_path)
         self.hash_index_manager = HashIndexManager(base_path)
         self.bplus_tree_index_manager = BPlusTreeIndexManager(base_path)
-
         self.frm_instance = frm_instance
+        self.recovery_enabled = recovery_enabled
+
         if self.frm_instance is not None:
-            self.frm_instance.setRoutine(self.flushBufferToDisk)
-            self.frm_instance.setReadMethod(self.putDiskToBuffer)
-        
+            self._configure_frm_integration()
+
         if not os.path.exists(self.storage_path):
             os.makedirs(self.storage_path)
-        
+
         schema_file = os.path.join(self.storage_path, 'schema.dat')
         if os.path.exists(schema_file):
             self.schema_manager.load_schemas()
+
+    def _configure_frm_integration(self):
+        if self.frm_instance is None:
+            return
+
+        if hasattr(self.frm_instance, 'configure_storage_manager'):
+            self.frm_instance.configure_storage_manager(
+                flush_callback=self.flush_buffer_to_disk,
+                read_callback=self.read_table_from_disk
+            )
+        else:
+            if hasattr(self.frm_instance, 'setRoutine'):
+                self.frm_instance.setRoutine(self.flush_buffer_to_disk)
+            if hasattr(self.frm_instance, 'setReadMethod'):
+                self.frm_instance.setReadMethod(self.read_table_from_disk)
+
+        self.recovery_enabled = True
 
     def _get_table_file_path(self, table_name: str) -> str:
         exact_path = os.path.join(self.base_path, f"{table_name}.dat")
         if os.path.exists(exact_path):
             return exact_path
-        
+
         lower_path = os.path.join(self.base_path, f"{table_name.lower()}.dat")
         if os.path.exists(lower_path):
             return lower_path
-        
+
         upper_path = os.path.join(self.base_path, f"{table_name.upper()}.dat")
         if os.path.exists(upper_path):
             return upper_path
-        
+
         return lower_path
+
+    def _read_row_by_pk(self, table_name: str, pk_column: str, pk_value) -> dict:
+        try:
+            retrieval_request = DataRetrieval(
+                table=table_name,
+                column="*",
+                conditions=[Condition(column=pk_column, operation='=', operand=pk_value)]
+            )
+            rows = self.read_block(retrieval_request)
+            if rows and len(rows) > 0:
+                return rows[0]
+            return None
+        except Exception as e:
+            # print(f"[SM DEBUG] Could not read row {pk_column}={pk_value}: {e}")
+            return None
 
     def read_block(self, data_retrieval: DataRetrieval):
         table = data_retrieval.table
@@ -264,7 +298,11 @@ class StorageManager:
             return self._update_record(table_path, schema, conditions, column, new_value)
 
     def _insert_record(self, table_path, schema, new_record):
-        record_bytes = self.row_serializer.serialize(schema, new_record)
+        sanitized_record = {k: v for k, v in new_record.items() if k != '_lsn'}
+        if '_lsn' in new_record and hasattr(self, 'frm') and self.frm:
+            sanitized_record['_lsn'] = new_record['_lsn']
+
+        record_bytes = self.row_serializer.serialize(schema, sanitized_record)
         table_name = os.path.basename(table_path)[:-4]
 
         with open(table_path, "rb+") as f:
@@ -324,6 +362,16 @@ class StorageManager:
                 new_value = {column: new_value}
             else:
                 raise ValueError("new_value must be a dictionary")
+
+        # Security: Filter out _lsn from user input for UPDATE
+        # Save FRM's _lsn if it exists, remove user's _lsn
+        frm_lsn = None
+        if '_lsn' in new_value and hasattr(self, 'frm') and self.frm:
+            frm_lsn = new_value['_lsn']
+        sanitized_new_value = {k: v for k, v in new_value.items() if k != '_lsn'}
+        if frm_lsn is not None:
+            sanitized_new_value['_lsn'] = frm_lsn
+        new_value = sanitized_new_value
         
         with open(table_path, "rb+") as f:
             page_id = 0
@@ -373,6 +421,10 @@ class StorageManager:
 
                         for col in column:
                             record[col] = new_value[col]
+
+                        # FIX #2: Preserve _lsn explicitly if present in new_value
+                        if '_lsn' in new_value:
+                            record['_lsn'] = new_value['_lsn']
 
                         new_record_bytes = self.row_serializer.serialize(schema, record)
                         page.update_record(slot_id, new_record_bytes)
@@ -598,35 +650,77 @@ class StorageManager:
         
         return Statistic(n_r=n_r, b_r=b_r, l_r=l_r, f_r=f_r, v_a_r=v_a_r, i_r=i_r)
     
-    def flushBufferToDisk(self):
+    def flush_buffer_to_disk(self):
         if self.frm_instance is None:
             return
-        
-        dirty_entries = self.frm_instance._buffer.getDirtyEntries()
 
-        for entry in dirty_entries:
-            table_name = entry.getKey()
-            data = entry.getData()
+        dirty_entries = self.frm_instance.get_dirty_buffer_entries()
 
-            self._write_buffer_row_to_disk(table_name, data)
+        if not dirty_entries:
+            # # print("[SM] No dirty entries to flush")
+            return
 
-            entry.markClean()
+        # # print(f"[SM] Flushing {len(dirty_entries)} dirty entries to disk...")
+
+        flushed_entries = []
+
+        try:
+            for entry in dirty_entries:
+                table_name = entry['key']
+                data = entry['data']
+
+                self._write_buffer_row_to_disk(table_name, data)
+                flushed_entries.append(entry)
+
+            # Only mark as clean if ALL writes succeeded
+            for entry in flushed_entries:
+                table_name = entry['key']
+                data = entry['data']
+                self.frm_instance.put_buffer_entry(table_name, data, is_dirty=False)
+
+            # # print(f"[SM] Flush completed successfully: {len(flushed_entries)} entries written")
+
+        except Exception as e:
+            print(f"[SM ERROR] Flush failed after {len(flushed_entries)}/{len(dirty_entries)} entries: {e}")
+            print(f"[SM ERROR] Entries remain dirty for recovery on next attempt")
+            raise
+
+    def flushBufferToDisk(self):
+        return self.flush_buffer_to_disk()
             
-              
+
     def _write_buffer_row_to_disk(self, table_name, row_data):
         schema = self.schema_manager.get_table_schema(table_name)
         if schema is None:
             raise ValueError(f"Tabel '{table_name}' tidak ditemukan")
-        
+
         attributes = schema.get_attributes()
-        
         primary_key_col = attributes[0]['name']
+
+        rows_written = 0
+        rows_skipped = 0
 
         for data in row_data:
             if primary_key_col in data:
-                conditions = [Condition(column=primary_key_col, operation='=', operand=data[primary_key_col])]
+                pk_value = data[primary_key_col]
+
+                buffer_lsn = data.get('_lsn', 0)
+
+                current_row = self._read_row_by_pk(table_name, primary_key_col, pk_value)
+
+                if current_row is not None:
+                    disk_lsn = current_row.get('_lsn', 0)
+
+                    if buffer_lsn < disk_lsn:
+                        #print(f"[SM LSN SAFETY] Skipping write for {table_name}[{primary_key_col}={pk_value}]: " f"buffer LSN {buffer_lsn} < disk LSN {disk_lsn}")
+                        rows_skipped += 1
+                        continue  # Skip this write - disk has newer data!
+
+                # Proceed with write
+                conditions = [Condition(column=primary_key_col, operation='=', operand=pk_value)]
 
                 columns = list(data.keys())
+                columns = [col for col in columns if col != '_lsn']
 
                 write_request = DataWrite(
                     table=table_name,
@@ -636,24 +730,38 @@ class StorageManager:
                 )
 
                 self.write_block(write_request)
+                rows_written += 1
 
+        if rows_skipped > 0:
+            #print(f"[SM LSN SAFETY] Flush summary for {table_name}: {rows_written} written, {rows_skipped} skipped (LSN protection)")
+            pass
+
+    def read_table_from_disk(self, table_name: str):
+        if self.frm_instance is None:
+            return None
+
+        try:
+            schema = self.schema_manager.get_table_schema(table_name)
+            if schema is None:
+                # print(f"[SM WARNING] Table '{table_name}' not found")
+                return None
+
+            retrieval_request = DataRetrieval(
+                table=table_name,
+                column="*",
+                conditions=[]
+            )
+
+            # Read from disk
+            rows = self.read_block(retrieval_request)
+            self.frm_instance.put_buffer_entry(table_name, rows, is_dirty=False)
+
+            # # print(f"[SM] Read {len(rows)} rows from table '{table_name}' into buffer")
+            return rows
+
+        except Exception as e:
+            # print(f"[SM ERROR] Failed to read table '{table_name}': {e}")
+            return None
 
     def putDiskToBuffer(self, table_name):
-        if self.frm_instance is None:
-            return
-        
-        schema = self.schema_manager.get_table_schema(table_name)
-        if schema is None:
-            raise ValueError(f"Tabel '{table_name}' tidak ditemukan")
-        
-        retrieval_request = DataRetrieval(
-            table=table_name,
-            column="*",
-            conditions=[]
-        )
-
-        rows = self.read_block(retrieval_request)
-
-        self.frm_instance._buffer.put(table_name, rows, isDirty=False)
-
-        
+        return self.read_table_from_disk(table_name)
