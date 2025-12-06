@@ -75,7 +75,7 @@ def load_dependencies() -> Dependencies:
 
     def _build_query_processor() -> Any:
         storage_manager = StorageManager(str(storage_data_dir))
-        optimization_engine = OptimizationEngine()
+        optimization_engine = OptimizationEngine(storage_manager=storage_manager)
         return QueryProcessor(
             optimization_engine=optimization_engine,
             storage_manager=storage_manager,

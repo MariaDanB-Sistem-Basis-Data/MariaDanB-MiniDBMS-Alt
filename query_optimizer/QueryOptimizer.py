@@ -58,7 +58,9 @@ import random
 
 class OptimizationEngine:
 
-    def __init__(self):
+    def __init__(self, storage_manager=None):
+        self.storage_manager = storage_manager
+        
         # GA Configuration
         self.use_ga = True
         self.ga_population_size = 20
@@ -542,18 +544,14 @@ class OptimizationEngine:
         if not parsed_query or not parsed_query.query_tree:
             return 0
         
-        # TODO: ==================== [UNCOMMENT SAAT INTEGRASI SM] ====================
-        # Uncomment blok di bawah untuk menggunakan StorageManager:
-        #
-        # from storage_manager import StorageManager
-        # from helper.cost import CostPlanner
-        
-        # storage_manager = StorageManager(base_path='storage_manager/data')
-        # cost_planner = CostPlanner(storage_manager=storage_manager)
-        
-        # return cost_planner.get_cost(parsed_query)
-        
-        # ===========================================================================
+        # Use Storage Manager stats if available, otherwise fallback to dummy stats
+        if self.storage_manager:
+            from helper.cost import CostPlanner
+            try:
+                cost_planner = CostPlanner(storage_manager=self.storage_manager)
+                return cost_planner.get_cost(parsed_query)
+            except Exception as e:
+                print(f"[Optimizer] Failed to get cost from SM, using fallback: {e}")
         
         # Fallback to dummy stats
         root = parsed_query.query_tree
