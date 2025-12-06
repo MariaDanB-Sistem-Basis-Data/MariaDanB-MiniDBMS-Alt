@@ -113,6 +113,46 @@ class DBMSServer:
             client_socket.close()
             print(f"[Client #{client_id}] Connection closed")
     
+    def _tree_to_string(self, node, indent="", is_last=True, lines=None):
+        """Convert query tree to string representation for display."""
+        if lines is None:
+            lines = []
+        
+        if not node:
+            return "(empty)"
+        
+        # Print current node
+        prefix = indent + ("└── " if is_last else "├── ")
+        node_type = node.type if hasattr(node, 'type') else "UNKNOWN"
+        node_val = ""
+        
+        if hasattr(node, 'val') and node.val is not None:
+            val = node.val
+            if isinstance(val, list):
+                if len(val) <= 3:
+                    node_val = f" {val}"
+                else:
+                    node_val = f" [{len(val)} items]"
+            elif isinstance(val, str) and len(val) > 50:
+                node_val = f" {val[:47]}..."
+            else:
+                node_val = f" {val}"
+        
+        lines.append(f"{prefix}{node_type}{node_val}")
+        
+        children = None
+        if hasattr(node, 'childs') and node.childs:
+            children = node.childs
+        elif hasattr(node, 'children') and node.children:
+            children = node.children
+        
+        if children:
+            for i, child in enumerate(children):
+                child_indent = indent + ("    " if is_last else "│   ")
+                self._tree_to_string(child, child_indent, i == len(children) - 1, lines)
+        
+        return "\n".join(lines) if indent == "" else None
+    
     def process_request(self, request: Dict[str, Any], client_id: int) -> Dict[str, Any]:
         request_type = request.get("type", "query")
         
@@ -281,8 +321,14 @@ class DBMSServer:
                 parsed = optimizer.parse_query(query)
                 cost_before = optimizer.get_cost(parsed) if parsed else 0
                 
+                # Generate original tree structure
+                original_tree = self._tree_to_string(parsed.query_tree if parsed else None)
+                
                 optimized = optimizer.optimize_query(parsed)
                 cost_after = optimizer.get_cost(optimized) if optimized else 0
+                
+                # Generate optimized tree structure
+                optimized_tree = self._tree_to_string(optimized.query_tree if optimized else None)
                 
                 improvement = 0
                 if cost_before > 0 and cost_after > 0:
@@ -290,7 +336,18 @@ class DBMSServer:
                 
                 optimization_info = {}
                 if hasattr(optimizer, 'last_optimization_info') and optimizer.last_optimization_info:
-                    optimization_info = optimizer.last_optimization_info
+                    # Convert optimization info to JSON-serializable format
+                    raw_info = optimizer.last_optimization_info
+                    optimization_info = {}
+                    for key, value in raw_info.items():
+                        if key == 'tables' and isinstance(value, list):
+                            # Convert TableReference objects to strings
+                            optimization_info[key] = [str(t) if hasattr(t, '__str__') else repr(t) for t in value]
+                        elif hasattr(value, '__dict__'):
+                            # Convert objects to string representation
+                            optimization_info[key] = str(value)
+                        else:
+                            optimization_info[key] = value
                 
                 return {
                     "type": "explain",
@@ -298,7 +355,9 @@ class DBMSServer:
                     "cost_before": cost_before,
                     "cost_after": cost_after,
                     "improvement_percent": improvement,
-                    "optimization_info": optimization_info
+                    "optimization_info": optimization_info,
+                    "original_tree": original_tree,
+                    "optimized_tree": optimized_tree
                 }
             except Exception as e:
                 return {
