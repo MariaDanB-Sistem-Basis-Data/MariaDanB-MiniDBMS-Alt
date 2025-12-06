@@ -92,29 +92,24 @@ class QueryProcessor:
             return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Success", data=result_data, query=query)
 
         except Exception as e:
-            print(f"Error processing query: {e}")
-            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Error occured when processing query", data=-1, query=query)
+            error_message = f"Error: {str(e)}"
+            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=error_message, data=-1, query=query)
 
     # execute SELECT query:
     # 1. parse query menggunakan query optimizer
     # 2. optimize query tree
     # 3. execute query tree dan retrieve data dari storage manager
     def execute_select(self, query: str) -> Union[Rows, int]:
-        try:
-            self._table_aliases = {}
-            parsed_query = self.optimization_engine.parse_query(query)
-            optimized_query = self.optimization_engine.optimize_query(parsed_query)
-            if optimized_query.query_tree is None:
-                return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
-            
-            self._extract_table_aliases(optimized_query.query_tree)
-            result_data = self._execute_query_tree(optimized_query.query_tree)
-            
-            return result_data
-            
-        except Exception as e:
-            print(f"Error executing SELECT query: {e}")
-            return -1
+        self._table_aliases = {}
+        parsed_query = self.optimization_engine.parse_query(query)
+        optimized_query = self.optimization_engine.optimize_query(parsed_query)
+        if optimized_query.query_tree is None:
+            raise ValueError("SELECT parsing failed - optimizer produced empty query tree")
+        
+        self._extract_table_aliases(optimized_query.query_tree)
+        result_data = self._execute_query_tree(optimized_query.query_tree)
+        
+        return result_data
 
     def _extract_table_aliases(self, node: qt):
         if node is None:
@@ -140,17 +135,12 @@ class QueryProcessor:
     # 2. extract table, columns, and conditions dari query tree
     # 3. execute update via storage manager
     def execute_update(self, query: str) -> Union[Rows, int]:
-        try:
-            parsed_query = self.optimization_engine.parse_query(query)
-            if parsed_query.query_tree is None:
-                return Rows.from_list(["UPDATE parsing failed - optimizer produced empty query tree"])
-            result = self._execute_update_tree(parsed_query.query_tree)
-            
-            return Rows.from_list([f"Updated {result} rows"])
-            
-        except Exception as e:
-            print(f"Error executing UPDATE query: {e}")
-            return -1
+        parsed_query = self.optimization_engine.parse_query(query)
+        if parsed_query.query_tree is None:
+            raise ValueError("UPDATE parsing failed - optimizer produced empty query tree")
+        result = self._execute_update_tree(parsed_query.query_tree)
+        
+        return Rows.from_list([f"Updated {result} rows"])
 
     # recursively execute query tree untuk SELECT operations
     # traverse dari root ke leaf (TABLE node) dan apply operations saat return
@@ -230,22 +220,17 @@ class QueryProcessor:
         return 0
 
     def _fetch_table_data(self, table_name: Any) -> Rows:
-        try:
-            if hasattr(table_name, 'name'):
-                table_str = str(table_name.name)
-            else:
-                table_str = str(table_name)
-            
-            data_retrieval = self._data_retrieval_factory(table=table_str, column="*", conditions=[])
-            result = self.storage_manager.read_block(data_retrieval)
-            
-            if result is not None and isinstance(result, list):
-                return Rows.from_list(result)
-            else:
-                return Rows.from_list([])
-                
-        except Exception as e:
-            print(f"Error fetching data from Storage Manager: {e}")
+        if hasattr(table_name, 'name'):
+            table_str = str(table_name.name)
+        else:
+            table_str = str(table_name)
+        
+        data_retrieval = self._data_retrieval_factory(table=table_str, column="*", conditions=[])
+        result = self.storage_manager.read_block(data_retrieval)
+        
+        if result is not None and isinstance(result, list):
+            return Rows.from_list(result)
+        else:
             return Rows.from_list([])
 
     def _resolve_column_name(self, column: str) -> str:
@@ -270,6 +255,24 @@ class QueryProcessor:
         
         if not col_list:
             return data
+        
+        # Validate columns exist in first row (if data exists)
+        if data.rows_count > 0:
+            first_row = list(data.data)[0] if data.data else None
+            if first_row and isinstance(first_row, dict):
+                available_cols = set(first_row.keys())
+                # Also check for simple column names without table prefix
+                available_simple_cols = set()
+                for col in available_cols:
+                    if '.' in col:
+                        available_simple_cols.add(col.split('.', 1)[1])
+                    else:
+                        available_simple_cols.add(col)
+                
+                for req_col in col_list:
+                    col_name = req_col.split('.', 1)[1] if '.' in req_col else req_col
+                    if req_col not in available_cols and col_name not in available_simple_cols:
+                        raise ValueError(f"Column '{req_col}' does not exist in table")
         
         projected_data = []
         for row in data.data:
