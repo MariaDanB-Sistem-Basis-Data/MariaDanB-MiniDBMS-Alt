@@ -763,5 +763,5 @@ class StorageManager:
             # print(f"[SM ERROR] Failed to read table '{table_name}': {e}")
             return None
 
-    def putDiskToBuffer(self, table_name):
+    def put_disk_to_buffer(self, table_name):
         return self.read_table_from_disk(table_name)
