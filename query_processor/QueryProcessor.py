@@ -168,10 +168,14 @@ class QueryProcessor:
             return self._apply_selection(child_results[0], node.val)
         
         elif node.type == "JOIN" or node.type == "NATURAL_JOIN" or node.type == "THETA_JOIN":
-            return self._apply_join(child_results[0], child_results[1], node.val, node.type)
+            left_with_prefix = self._add_table_prefixes(child_results[0], self._get_table_name(node.childs[0]))
+            right_with_prefix = self._add_table_prefixes(child_results[1], self._get_table_name(node.childs[1]))
+            return self._apply_join(left_with_prefix, right_with_prefix, node.val, node.type)
         
         elif node.type == "CARTESIAN":
-            return self._apply_cartesian(child_results[0], child_results[1])
+            left_with_prefix = self._add_table_prefixes(child_results[0], self._get_table_name(node.childs[0]))
+            right_with_prefix = self._add_table_prefixes(child_results[1], self._get_table_name(node.childs[1]))
+            return self._apply_cartesian(left_with_prefix, right_with_prefix)
         
         elif node.type == "SORT":
             return self._apply_sort(child_results[0], node.val)
@@ -239,6 +243,39 @@ class QueryProcessor:
             if prefix in self._table_aliases:
                 return f"{self._table_aliases[prefix]}.{col_name}"
         return column
+
+    def _get_table_name(self, node: qt) -> str:
+        if node is None:
+            return ""
+        if node.type == "TABLE":
+            val_str = str(node.val)
+            if hasattr(node.val, 'name'):
+                val_str = str(node.val.name)
+            return val_str.split()[0]
+        for child in node.childs:
+            name = self._get_table_name(child)
+            if name:
+                return name
+        return ""
+    
+    def _add_table_prefixes(self, data: Rows, table_name: str) -> Rows:
+        if not table_name or data.rows_count == 0:
+            return data
+        
+        prefixed_data = []
+        for row in data.data:
+            if isinstance(row, dict):
+                prefixed_row = {}
+                for key, value in row.items():
+                    if '.' in key or key.startswith('_'):
+                        prefixed_row[key] = value
+                    else:
+                        prefixed_row[f"{table_name}.{key}"] = value
+                prefixed_data.append(prefixed_row)
+            else:
+                prefixed_data.append(row)
+        
+        return Rows.from_list(prefixed_data)
 
     # apply PROJECT operation - select specific columns
     def _apply_projection(self, data: Rows, columns: Any) -> Rows:
@@ -326,33 +363,75 @@ class QueryProcessor:
         col_name = self._resolve_column_name(normalized.column)
         operator = normalized.operator
         value = normalized.value
+        
+        is_column_comparison = False
+        value_col_name = None
+        
+        def strip_prefix(col):
+            if '.' in col:
+                return col.split('.', 1)[1]
+            return col
+        
+        if '.' in value or (value and not value[0].isdigit() and "'" not in value and '"' not in value):
+            value_col_name = self._resolve_column_name(value)
+            sample_row = list(data.data)[0] if data.rows_count > 0 else None
+            if sample_row and isinstance(sample_row, dict):
+                if value_col_name in sample_row or strip_prefix(value_col_name) in sample_row or value in sample_row or strip_prefix(value) in sample_row:
+                    is_column_comparison = True
+        
         filtered_data = []
         
         for row in data.data:
-            if isinstance(row, dict) and col_name in row:
-                row_value = str(row[col_name])
+            if not isinstance(row, dict):
+                continue
                 
-                try:
-                    row_value_num = float(row_value)
-                    value_num = float(value)
-                    
-                    if operator == "=" and row_value_num == value_num:
-                        filtered_data.append(row)
-                    elif operator == "!=" and row_value_num != value_num:
-                        filtered_data.append(row)
-                    elif operator == ">" and row_value_num > value_num:
-                        filtered_data.append(row)
-                    elif operator == "<" and row_value_num < value_num:
-                        filtered_data.append(row)
-                    elif operator == ">=" and row_value_num >= value_num:
-                        filtered_data.append(row)
-                    elif operator == "<=" and row_value_num <= value_num:
-                        filtered_data.append(row)
-                except ValueError:
-                    if operator == "=" and row_value == value:
-                        filtered_data.append(row)
-                    elif operator == "!=" and row_value != value:
-                        filtered_data.append(row)
+            left_value = None
+            if col_name in row:
+                left_value = row[col_name]
+            elif strip_prefix(col_name) in row:
+                left_value = row[strip_prefix(col_name)]
+            else:
+                continue
+            
+            if is_column_comparison:
+                right_value = None
+                if value_col_name in row:
+                    right_value = row[value_col_name]
+                elif strip_prefix(value_col_name) in row:
+                    right_value = row[strip_prefix(value_col_name)]
+                elif value in row:
+                    right_value = row[value]
+                elif strip_prefix(value) in row:
+                    right_value = row[strip_prefix(value)]
+                else:
+                    continue
+            else:
+                right_value = value
+            
+            try:
+                left_num = float(left_value)
+                right_num = float(right_value)
+                
+                if operator == "=" and left_num == right_num:
+                    filtered_data.append(row)
+                elif operator == "!=" and left_num != right_num:
+                    filtered_data.append(row)
+                elif operator == ">" and left_num > right_num:
+                    filtered_data.append(row)
+                elif operator == "<" and left_num < right_num:
+                    filtered_data.append(row)
+                elif operator == ">=" and left_num >= right_num:
+                    filtered_data.append(row)
+                elif operator == "<=" and left_num <= right_num:
+                    filtered_data.append(row)
+            except (ValueError, TypeError):
+                left_str = str(left_value)
+                right_str = str(right_value)
+                
+                if operator == "=" and left_str == right_str:
+                    filtered_data.append(row)
+                elif operator == "!=" and left_str != right_str:
+                    filtered_data.append(row)
         
         return Rows.from_list(filtered_data)
 
