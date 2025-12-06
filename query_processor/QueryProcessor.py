@@ -319,8 +319,6 @@ class QueryProcessor:
         return Rows.from_list(projected_data)
 
     # apply SIGMA operation - filter rows based on WHERE condition
-
-    # apply SIGMA operation - filter rows based on WHERE condition
     def _apply_selection(self, data: Rows, condition: Any) -> Rows:
         normalized = NormalizedCondition.normalize(condition)
         if not normalized:
@@ -558,8 +556,7 @@ class QueryProcessor:
         
         first_condition = conditions[0] if conditions else None # dari spek cuma consider 1 condition aja
         if first_condition.__class__.__name__ != "ConditionNode":
-            print("Error: UPDATE only supports one condition")
-            return -1
+            raise ValueError(f"Error: UPDATE only supports one condition")
         
         cond_objs = [self._condition_factory(column=first_condition.attr.column, operation=first_condition.op, operand=first_condition.value)] if first_condition else []
 
@@ -581,8 +578,7 @@ class QueryProcessor:
             return total_updated
             
         except Exception as e:
-            print(f"Error calling Storage Manager write_block: {e}")
-            return 0
+            raise ValueError(f"Error calling Storage Manager write_block: {e}")
 
     # parse condition string to Condition object
     def _parse_condition(self, condition_str: str) -> cond | None:
@@ -599,126 +595,114 @@ class QueryProcessor:
 
     # parse INSERT (dari optimizer) & panggil write_block dari storage manager
     def execute_insert(self, query: str) -> Union[Rows, int]:
+        parsed = None
         try:
+            parsed = self.optimization_engine.parse_query(query)
+        except Exception:
             parsed = None
-            try:
-                parsed = self.optimization_engine.parse_query(query)
-            except Exception:
-                parsed = None
 
-            table_name = None
-            cols_list = []
-            values_list = []
+        table_name = None
+        cols_list = []
+        values_list = []
 
-            if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "INSERT":
-                val = parsed.query_tree.val
-                
-                # untuk handle InsertData 
-                if hasattr(val, "table") and hasattr(val, "columns") and hasattr(val, "values"):
-                    table_name = val.table # type: ignore
-                    cols_list = list(val.columns) if val.columns else [] # type: ignore
-                    values_list = list(val.values) if val.values else [] # type: ignore
-                # Legacy string format: "table|columns|values"
-                elif isinstance(val, str):
-                    parts = val.split("|", 2)
-                    if len(parts) >= 1:
-                        table_name = parts[0].strip()
-                    if len(parts) >= 2:
-                        cols_list = [c.strip() for c in parts[1].split(",")]
-                    if len(parts) == 3:
-                        values_list = [v.strip().strip("'\"") for v in parts[2].split(",")]
-            else:
-                return Rows.from_list(["INSERT parsing failed - parsed error"])
+        if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "INSERT":
+            val = parsed.query_tree.val
+            
+            # untuk handle InsertData 
+            if hasattr(val, "table") and hasattr(val, "columns") and hasattr(val, "values"):
+                table_name = val.table # type: ignore
+                cols_list = list(val.columns) if val.columns else [] # type: ignore
+                values_list = list(val.values) if val.values else [] # type: ignore
+            # Legacy string format: "table|columns|values"
+            elif isinstance(val, str):
+                parts = val.split("|", 2)
+                if len(parts) >= 1:
+                    table_name = parts[0].strip()
+                if len(parts) >= 2:
+                    cols_list = [c.strip() for c in parts[1].split(",")]
+                if len(parts) == 3:
+                    values_list = [v.strip().strip("'\"") for v in parts[2].split(",")]
+        else:
+            raise ValueError(f"INSERT parsing failed - parsed error")
 
-            if not table_name:
-                return Rows.from_list(["INSERT parsing failed - no table found"])
+        if not table_name:
+            raise ValueError(f"INSERT parsing failed - no table found")
 
-            # Build row dict
-            row_to_insert = {}
-            if cols_list and values_list and len(cols_list) == len(values_list):
-                row_to_insert = dict(zip(cols_list, values_list))
-            elif values_list:
-                row_to_insert = {"values": values_list}
+        # Build row dict
+        row_to_insert = {}
+        if cols_list and values_list and len(cols_list) == len(values_list):
+            row_to_insert = dict(zip(cols_list, values_list))
+        elif values_list:
+            row_to_insert = {"values": values_list}
 
-            try:
-                data_write = self._data_write_factory(
-                    table=table_name,
-                    column=None,
-                    conditions=[],
-                    new_value=row_to_insert,
-                )
-                res = self.storage_manager.write_block(data_write)
+        try:
+            data_write = self._data_write_factory(
+                table=table_name,
+                column=None,
+                conditions=[],
+                new_value=row_to_insert,
+            )
+            res = self.storage_manager.write_block(data_write)
 
-                if isinstance(res, int):
-                    return Rows.from_list([f"Inserted {res} rows"])
-                elif res:
-                    return Rows.from_list([f"Inserted rows via storage manager: {res}"])
-            except Exception as e:
-                print(f"Error calling StorageManager.write_block for insert: {e}")
-                return -1
-
-            return Rows.from_list(["INSERT executed - storage manager returned no status"])
-
+            if isinstance(res, int):
+                return Rows.from_list([f"Inserted {res} rows"])
+            elif res:
+                return Rows.from_list([f"Inserted rows via storage manager: {res}"])
         except Exception as e:
-            print(f"Error executing INSERT: {e}")
-            return -1
+            raise ValueError(f"Error calling StorageManager.write_block for insert: {e}")
+
+        raise ValueError(f"INSERT executed - storage manager returned no status")
 
     def execute_delete(self, query: str) -> Union[Rows, int]:
+        parsed = None
         try:
+            parsed = self.optimization_engine.parse_query(query)
+        except Exception:
             parsed = None
-            try:
-                parsed = self.optimization_engine.parse_query(query)
-            except Exception:
-                parsed = None
 
-            table_name = None
-            conditions = []
+        table_name = None
+        conditions = []
 
-            if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "DELETE":
-                current = parsed.query_tree
-                while current:
-                    t = getattr(current, "type", "").upper()
-                    if t == "SIGMA":
-                        if current.val:
-                            conditions.append(current.val)
-                    elif t == "TABLE":
-                        table_name = current.val
-                        break
-                    current = current.childs[0] if current.childs else None
-            else:
-                return Rows.from_list([f"DELETE parsing failed - parsed error"])
+        if parsed and parsed.query_tree and getattr(parsed.query_tree, "type", "").upper() == "DELETE":
+            current = parsed.query_tree
+            while current:
+                t = getattr(current, "type", "").upper()
+                if t == "SIGMA":
+                    if current.val:
+                        conditions.append(current.val)
+                elif t == "TABLE":
+                    table_name = current.val
+                    break
+                current = current.childs[0] if current.childs else None
+        else:
+            raise ValueError(f"DELETE parsing failed - parsed error")
 
-            if not table_name:
-                return Rows.from_list([f"DELETE parsing failed - no table found"])
+        if not table_name:
+            raise ValueError(f"DELETE parsing failed - no table found")
 
-            first_condition = conditions[0] if conditions else None # dari spek cuma consider 1 condition aja
-            if first_condition.__class__.__name__ != "ConditionNode":
-                print("Error: DELETE only supports one condition")
-                return -1
+        first_condition = conditions[0] if conditions else None # dari spek cuma consider 1 condition aja
+        if first_condition.__class__.__name__ != "ConditionNode":
+            raise ValueError(f"Error: DELETE only supports one condition")
 
-            cond_objs = [self._condition_factory(column=first_condition.attr.column, operation=first_condition.op, operand=first_condition.value)] if first_condition else []
+        cond_objs = [self._condition_factory(column=first_condition.attr.column, operation=first_condition.op, operand=first_condition.value)] if first_condition else []
 
-            try:
-                data_deletion = self._data_write_factory(
-                    table=repr(table_name),
-                    column="*",
-                    conditions=cond_objs,
-                    new_value=None,
-                )
-                res = self.storage_manager.delete_block(data_deletion)
-                # NOTE: If delete_block is implemented it should return an int or truthy result, kaya write_block
-                if isinstance(res, int):
-                    return Rows.from_list([f"Deleted {res} rows"])
-                elif res:
-                    return Rows.from_list([f"Deleted rows via storage manager: {res}"])
-            except Exception as e:
-                print(f"Error calling StorageManager.delete_block: {e}")
-
-            return Rows.from_list(["DELETE executed - storage manager returned no status"])
-
+        try:
+            data_deletion = self._data_write_factory(
+                table=repr(table_name),
+                column="*",
+                conditions=cond_objs,
+                new_value=None,
+            )
+            res = self.storage_manager.delete_block(data_deletion)
+            # NOTE: If delete_block is implemented it should return an int or truthy result, kaya write_block
+            if isinstance(res, int):
+                return Rows.from_list([f"Deleted {res} rows"])
+            elif res:
+                return Rows.from_list([f"Deleted rows via storage manager: {res}"])
         except Exception as e:
-            print(f"Error executing DELETE: {e}")
-            return -1
+            raise ValueError(f"Error calling StorageManager.delete_block: {e}")
+
+        raise ValueError("DELETE executed - storage manager returned no status")
 
     def execute_create_table(self, query: str) -> Union[Rows, int]:
         """
@@ -728,14 +712,14 @@ class QueryProcessor:
         # pattern CREATE TABLE <name> (<columns>)
         match = re.search(r"(?i)CREATE\s+TABLE\s+(\w+)\s*\((.+)\)", query)
         if not match:
-            return Rows.from_list(["Syntax Error: Invalid CREATE TABLE format."])
+            raise ValueError(f"Syntax Error: Invalid CREATE TABLE format.")
 
         table_name = match.group(1)
         columns_part = match.group(2)
 
         # existence
         if self.storage_manager.schema_manager.get_table_schema(table_name):
-             return Rows.from_list([f"Error: Table '{table_name}' already exists."])
+            raise ValueError(f"Error: Table '{table_name}' already exists.")
 
         new_schema = self._schema_factory()
         
@@ -757,7 +741,7 @@ class QueryProcessor:
 
             # use regex to validate data types varchar(*)
             if col_type not in ['int', 'integer', 'float', 'char'] and re.match(r"varchar\(\d+\)", col_type) is None:
-                return Rows.from_list([f"Error: Unsupported data type '{col_type}' for column '{col_name}'."])
+                raise ValueError(f"Error: Unsupported data type '{col_type}' for column '{col_name}'.")
 
             # handle Varchar/Char with size (e.g., varchar(50))
             if '(' in raw_type and ')' in raw_type:
@@ -778,7 +762,7 @@ class QueryProcessor:
                 add_attribute = getattr(new_schema, "add_attribute")
                 add_attribute(col_name, col_type, col_size)
             except ValueError as e:
-                 return Rows.from_list([f"Error: {str(e)}"])
+                raise ValueError(f"Error: {str(e)}")
 
         # save to Schema Manager
         self.storage_manager.schema_manager.add_table_schema(table_name, new_schema)
@@ -791,7 +775,7 @@ class QueryProcessor:
             with open(file_path, 'wb') as f:
                 f.write(empty_page.serialize())
         except IOError as e:
-            return Rows.from_list([f"Error creating table file: {str(e)}"])
+            raise ValueError(f"Error creating table file: {str(e)}")
 
         self.storage_manager.schema_manager.load_schemas()
         return Rows.from_list([f"Table '{table_name}' created successfully."])
@@ -801,7 +785,7 @@ class QueryProcessor:
         # parse query
         match = re.search(r"(?i)DROP\s+TABLE\s+([A-Za-z_]\w*)", query)
         if not match:
-            return Rows.from_list(["Syntax Error: Invalid DROP TABLE format."])
+            raise ValueError(f"Syntax Error: Invalid DROP TABLE format.")
 
         table_name = match.group(1)
 
@@ -819,7 +803,7 @@ class QueryProcessor:
 
         # detect if .dat is really has been deleted
         if os.path.exists(dat_path):
-            return Rows.from_list([f"Table '{table_name}' is not deleted successfully."])
+            raise ValueError(f"Table '{table_name}' is not deleted successfully.")
 
         return Rows.from_list([f"Table '{table_name}' deleted successfully."])
 
@@ -873,8 +857,7 @@ class QueryProcessor:
                 return Rows.from_list(["ABORT failed - no active transaction"])
                 
         except Exception as e:
-            print(f"Error executing ABORT: {e}")
-            return -1
+            raise ValueError(f"Error executing ABORT: {e}")
     
     # rollback all changes made in the current transaction
     def _rollback_transaction(self) -> bool:
@@ -894,7 +877,6 @@ class QueryProcessor:
             return True
             
         except Exception as e:
-            print(f"Error rolling back transaction: {e}")
             return False
 
     # execute list all columns : for executing \d
@@ -906,14 +888,11 @@ class QueryProcessor:
             return True
             
         except Exception as e:
-            print(f"Error rolling back transaction: {e}")
-            return False
+            raise ValueError(f"Error list all columns: {e}")
     
-    # rollback all changes made in the current transaction
     def execute_list_tables(self, query) -> bool:
         try:
             return True
             
         except Exception as e:
-            print(f"Error rolling back transaction: {e}")
-            return False
+            raise ValueError(f"Error list tables: {e}")
