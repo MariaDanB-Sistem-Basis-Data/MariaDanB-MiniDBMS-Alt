@@ -8,12 +8,14 @@ class LogEntryType(Enum):
     COMMIT = "commit"
     ABORT = "abort"
     UPDATE = "update"
-    COMPENSATION = "compensation"  # Redo-only log record
+    COMPENSATION = "compensation"
     CHECKPOINT = "checkpoint"
+    END = "end"
 
 
 class LogEntry:
-    # Format: <Ti start> | <Ti, Xj, V1, V2> | <Ti commit> | <Ti abort>
+    # Format: <Ti start> | <Ti, Xj, V1, V2> | <Ti commit> | <Ti abort> | <Ti end>
+    # CLR Format: <Ti, Xj, V1, undoNextLSN>  (ARIES Compensation Log Record)
 
     def __init__(
         self,
@@ -23,7 +25,8 @@ class LogEntry:
         entryType: LogEntryType,
         dataItem: Optional[str] = None,  # Xj
         oldValue: Optional[Any] = None,   # V1 (for undo)
-        newValue: Optional[Any] = None    # V2 (for redo)
+        newValue: Optional[Any] = None,   # V2 (for redo)
+        undoNextLSN: Optional[int] = None  # For CLR: next LSN to undo
     ):
         self._logId = logId
         self._transactionId = transactionId
@@ -32,6 +35,7 @@ class LogEntry:
         self._dataItem = dataItem
         self._oldValue = oldValue
         self._newValue = newValue
+        self._undoNextLSN = undoNextLSN
 
     def getLogId(self) -> int:
         return self._logId
@@ -54,6 +58,9 @@ class LogEntry:
     def getNewValue(self) -> Optional[Any]:
         return self._newValue
 
+    def getUndoNextLSN(self) -> Optional[int]:
+        return self._undoNextLSN
+
     def toDict(self) -> Dict[str, Any]:
         return {
             "logId": self._logId,
@@ -63,6 +70,7 @@ class LogEntry:
             "dataItem": self._dataItem,
             "oldValue": self._oldValue,
             "newValue": self._newValue,
+            "undoNextLSN": self._undoNextLSN,
         }
 
     @staticmethod
@@ -74,7 +82,8 @@ class LogEntry:
             entryType=LogEntryType(data["entryType"]),
             dataItem=data.get("dataItem"),
             oldValue=data.get("oldValue"),
-            newValue=data.get("newValue")
+            newValue=data.get("newValue"),
+            undoNextLSN=data.get("undoNextLSN")
         )
 
     def performUndo(self) -> Any:

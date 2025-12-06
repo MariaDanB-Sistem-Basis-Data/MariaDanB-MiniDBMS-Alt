@@ -58,7 +58,7 @@ def load_dependencies() -> Dependencies:
     Condition = _import_attr("storagemanager_model.condition", "Condition")
     Schema = _import_attr("storagemanager_helper.schema", "Schema")
 
-    storage_data_dir = ROOT / "storage_manager" / "data"
+    storage_data_dir = ROOT / "data"
     storage_data_dir.mkdir(parents=True, exist_ok=True)
 
     def _make_data_retrieval(*, table: str, column: Any, conditions: Any) -> Any:
@@ -75,7 +75,7 @@ def load_dependencies() -> Dependencies:
 
     def _build_query_processor() -> Any:
         storage_manager = StorageManager(str(storage_data_dir))
-        optimization_engine = OptimizationEngine()
+        optimization_engine = OptimizationEngine(storage_manager=storage_manager)
         return QueryProcessor(
             optimization_engine=optimization_engine,
             storage_manager=storage_manager,

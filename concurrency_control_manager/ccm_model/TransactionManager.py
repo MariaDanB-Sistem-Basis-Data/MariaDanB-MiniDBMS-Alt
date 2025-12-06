@@ -18,17 +18,17 @@ except Exception:
 
 @dataclass
 class TransactionManager:
-    transactions: dict[int, 'Transaction'] = None
-    initialized: bool = False
-    next_tid: int = 1
-    # harusnya nanti gini
-    # recovery_manager: Optional[IFailureRecoveryManager] = None
-    # recovery_criteria_factory: Optional[Callable[[int], SupportsRecoveryCriteria]] = None
+    def __init__(self, recovery_manager: Optional[FailureRecoveryManager] = None):
+        self.transactions: dict[int, Transaction] = None
+        self.initialized: bool = False
+        self.next_tid: int = 1
+        self.recovery_manager: Optional[FailureRecoveryManager] = recovery_manager
     
     def __post_init__(self):
         if self.transactions is None:
             self.transactions = {}
         self.initialized = True
+
     
     def clear(self) -> None:
         self.transactions.clear()
@@ -61,9 +61,14 @@ class TransactionManager:
             transaction =  self.get_transaction(transaction_id)
             if not transaction.can_be_aborted():
                 return False
+            
+            # abort dari FRM duluan, dan status hrsnya baru diubah kalo abortnya sukses
+            if self.recovery_manager is not None:
+                if not self.recovery_manager.abort(transaction_id):
+                    print(f"Failed to abort transaction {transaction_id} via FRM")
+                    return False
+            
             transaction.status = TransactionStatus.ABORTED
-            # NOTES
-            # nanti tiap abort manggil frm.recover(criteria)
             print(f"Transaction {transaction_id} is {transaction.status.name}.")
             return True
     

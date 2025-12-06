@@ -195,7 +195,7 @@ def run_test_query(query_name, query, optimizer, verbose=True):
         print(f"  Total time:        {(parse_time + optimize_time)*1000:.2f}ms")
         
         # Determine optimization method used
-        tables = list(optimizer._extract_join_conditions_from_tree(parsed.query_tree).keys())
+        tables = list(optimizer._extract_join_info(parsed.query_tree)[0].keys())
         num_tables = len(set([t for pair in tables for t in pair])) if tables else 1
         method_used = "GA + Heuristic" if num_tables >= optimizer.ga_threshold_tables else "Heuristic"
         print(f"  Method used:       {method_used}")
