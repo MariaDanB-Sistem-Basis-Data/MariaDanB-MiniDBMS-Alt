@@ -18,11 +18,11 @@ except Exception:
 
 @dataclass
 class TransactionManager:
-    def __init__(self, abort_manager: Optional[FailureRecoveryManager] = None):
+    def __init__(self, recovery_manager: Optional[FailureRecoveryManager] = None):
         self.transactions: dict[int, Transaction] = None
         self.initialized: bool = False
         self.next_tid: int = 1
-        self.abort_manager: Optional[FailureRecoveryManager] = abort_manager
+        self.recovery_manager: Optional[FailureRecoveryManager] = recovery_manager
     
     def __post_init__(self):
         if self.transactions is None:
@@ -61,10 +61,14 @@ class TransactionManager:
             transaction =  self.get_transaction(transaction_id)
             if not transaction.can_be_aborted():
                 return False
+            
+            # abort dari FRM duluan, dan status hrsnya baru diubah kalo abortnya sukses
+            if self.recovery_manager is not None:
+                if not self.recovery_manager.abort(transaction_id):
+                    print(f"Failed to abort transaction {transaction_id} via FRM")
+                    return False
+            
             transaction.status = TransactionStatus.ABORTED
-            # Call FRM abort if available (dependency injection)
-            if self.abort_manager is not None:
-                self.abort_manager.abort(transaction_id)
             print(f"Transaction {transaction_id} is {transaction.status.name}.")
             return True
     
