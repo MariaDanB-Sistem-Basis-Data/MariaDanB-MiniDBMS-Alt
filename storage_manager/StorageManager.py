@@ -574,7 +574,7 @@ class StorageManager:
         file_size = os.path.getsize(table_file)
         page_count = file_size // 4096
         
-        serializer = RowSerializer()
+        serializer = RowSerializer(with_lsn=self.row_serializer.with_lsn)
         distinct_values = {attr['name']: set() for attr in attributes}
         
         try:
