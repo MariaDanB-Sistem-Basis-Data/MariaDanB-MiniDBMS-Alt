@@ -78,7 +78,10 @@ def load_dependencies() -> Dependencies:
         optimization_engine = OptimizationEngine(storage_manager=storage_manager)
         
         ccm = ConcurrencyControlManager()
-        ccm.set_method('two_phase_locking') 
+        TwoPhaseLocking = _import_attr("ccm_methods.TwoPhaseLocking", "TwoPhaseLocking")
+        two_phase_locking_method = TwoPhaseLocking()
+        ccm.set_method(two_phase_locking_method)
+        
         frm = get_failure_recovery_manager()
         
         return QueryProcessor(
