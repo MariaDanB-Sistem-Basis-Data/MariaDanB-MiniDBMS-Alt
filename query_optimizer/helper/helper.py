@@ -45,8 +45,7 @@ def _theta_pred(join_node: QueryTree) -> str:
     if not _is_theta(join_node):
         return ""
     if isinstance(join_node.val, ThetaJoin):
-        # return string representation of condition
-        return str(join_node.val.condition)
+        return join_node.val.condition
     return join_node.val.split(":", 1)[1].strip()
 
 def _mk_theta(pred: str) -> str:
@@ -63,25 +62,30 @@ def _find_node(tree: QueryTree, node_type: str):
     return None
 
 def _tables_under(node: QueryTree):
-    """Extract all table names from a query tree"""
     out = []
+
     def dfs(n):
         if n.type == "TABLE":
-            if isinstance(n.val, TableReference):
-                out.append(n.val.name)
-            else:
-                out.append(n.val)
+            out.append(n.val)
         for c in n.childs:
             dfs(c)
-    dfs(node)
-    return set(out)
+
+    seen = set()
+    unique = []
+    for x in out:
+        name = x.name if hasattr(x, "name") else str(x)
+        if name not in seen:
+            seen.add(name)
+            unique.append(x)
+
+    return unique
 
 # σθ(E1 × E2)  ⇒  E1 ⋈θ E2
 def fold_selection_with_cartesian(node: QueryTree):
     if node.type == "SIGMA" and node.childs and _is_cartesian(node.childs[0]):
         join = node.childs[0]
         pred = node.val  # seluruh predicate disimpan di val
-        join.val = _mk_theta(pred)
+        join.val = ThetaJoin(pred) 
         # ganti sigma dengan join
         if node.parent:
             node.parent.replace_child(node, join)
@@ -97,8 +101,17 @@ def merge_selection_into_join(node: QueryTree):
         join = node.childs[0]
         p_old = _theta_pred(join)
         p_new = node.val
-        merged = p_new if not p_old else f"{p_new} AND {p_old}"
-        join.val = _mk_theta(merged)
+        if not p_old:
+            merged_cond = p_new
+        else:
+            # create LogicalNode with AND
+            if isinstance(p_old, str) and isinstance(p_new, str):
+                merged_cond = f"{p_new} AND {p_old}"
+            else:
+                # at least one is a node object - create LogicalNode
+                merged_cond = LogicalNode("AND", [p_new, p_old])
+
+        join.val = ThetaJoin(merged_cond)
         # angkat join, hilangkan sigma
         if node.parent:
             node.parent.replace_child(node, join)
@@ -123,14 +136,14 @@ def associate_natural_join(node: QueryTree) -> QueryTree:
         if L.type == "JOIN" and _is_natural(L):
             # (A ⋈ B) ⋈ C  =>  A ⋈ (B ⋈ C)
             A = L.childs[0]; B = L.childs[1]; C = R
-            inner = QueryTree("JOIN", "NATURAL", [B, C]); B.parent = inner; C.parent = inner
-            rot = QueryTree("JOIN", "NATURAL", [A, inner]); A.parent = rot; inner.parent = rot
+            inner = QueryTree("JOIN", NaturalJoin(), [B, C]); B.parent = inner; C.parent = inner
+            rot = QueryTree("JOIN", NaturalJoin(), [A, inner]); A.parent = rot; inner.parent = rot
             return rot
         if R.type == "JOIN" and _is_natural(R):
             # A ⋈ (B ⋈ C)  =>  (A ⋈ B) ⋈ C   (bentuk lain, tapi kita sediakan juga)
             B = R.childs[0]; C = R.childs[1]; A = L
-            inner = QueryTree("JOIN", "NATURAL", [A, B]); A.parent = inner; B.parent = inner
-            rot = QueryTree("JOIN", "NATURAL", [inner, C]); inner.parent = rot; C.parent = rot
+            inner = QueryTree("JOIN", NaturalJoin(), [A, B]); A.parent = inner; B.parent = inner
+            rot = QueryTree("JOIN", NaturalJoin(), [inner, C]); inner.parent = rot; C.parent = rot
             return rot
     return node
 
@@ -211,9 +224,12 @@ def choose_best(plans, stats: dict) -> QueryTree:
             best, best_cost = p, c
     return best
 
-def build_join_tree(order, join_conditions: dict = None) -> QueryTree:
+def build_join_tree(order, join_conditions: dict = None, natural_joins: set = None) -> QueryTree:
     if join_conditions is None:
         join_conditions = {}
+    
+    if natural_joins is None:
+        natural_joins = set()
 
     if not order:
         return None
@@ -231,31 +247,68 @@ def build_join_tree(order, join_conditions: dict = None) -> QueryTree:
 
         next_table = name
 
-        # direct key lookup
-        key = frozenset({cur_table, next_table})
-        pred = join_conditions.get(key, "")
+        cur_name = cur_table.name if isinstance(cur_table, TableReference) else str(cur_table)
+        next_name = next_table.name if isinstance(next_table, TableReference) else str(next_table)
 
-        # if not found, try any table in left subtree paired with next_table
-        if not pred:
-            left_tables = list(_tables_under(cur))
-            for lt in left_tables:
-                k2 = frozenset({lt, next_table})
-                if k2 in join_conditions:
-                    pred = join_conditions[k2]
+        is_natural = False
+        for nj_pair in natural_joins:
+            if isinstance(nj_pair, (set, frozenset)):
+                nj_names = set()
+                for item in nj_pair:
+                    if isinstance(item, TableReference):
+                        nj_names.add(item.name)
+                    else:
+                        nj_names.add(str(item))
+                
+                if cur_name in nj_names and next_name in nj_names:
+                    is_natural = True
                     break
+        if is_natural:
+            val = NaturalJoin()
 
-        # if still not found, try symmetrical: any table in right subtree vs any in left
-        if not pred:
-            for jt_key in join_conditions.keys():
-                try:
-                    if isinstance(jt_key, (set, frozenset)) and next_table in jt_key:
-                        if any(lt in jt_key for lt in list(_tables_under(cur))):
-                            pred = join_conditions[jt_key]
-                            break
-                except Exception:
-                    continue
+        else:
+            # direct key lookup
+            key = frozenset({cur_name, next_name})
+            pred = join_conditions.get(key, None)
 
-        val = _mk_theta(pred) if pred else "CARTESIAN"
+            # klo gk ketemu, coba cari dengan tabel-tabel di subtree kiri
+            if not pred:
+                left_tables = list(_tables_under(cur))
+                for lt in left_tables:
+                    lt_name = lt.name if isinstance(lt, TableReference) else str(lt)
+                    k2 = frozenset({lt_name, next_name})
+                    if k2 in join_conditions:
+                        pred = join_conditions[k2]
+                        break
+
+            # klo gk ketemu, coba cari dengan nama string
+            if not pred:
+                for jt_key in join_conditions.keys():
+                    try:
+                        if isinstance(jt_key, (set, frozenset)):
+                            jt_names = set()
+                            for item in jt_key:
+                                if isinstance(item, TableReference):
+                                    jt_names.add(item.name)
+                                else:
+                                    jt_names.add(str(item))
+                            
+                            left_table_names = set()
+                            for lt in list(_tables_under(cur)):
+                                lt_name = lt.name if isinstance(lt, TableReference) else str(lt)
+                                left_table_names.add(lt_name)
+                            
+                            if next_name in jt_names and any(lt in jt_names for lt in left_table_names):
+                                pred = join_conditions[jt_key]
+                                break
+                    except Exception:
+                        continue
+
+            if pred:
+                val = ThetaJoin(pred)
+            else:
+                val = "CARTESIAN"
+
         cur = QueryTree("JOIN", val, [cur, right])
         cur.childs[0].parent = cur
         right.parent = cur
@@ -655,12 +708,11 @@ def push_projection_through_join_with_join_attrs(tree: QueryTree) -> QueryTree:
     return tree
 
 # helper untuk extract atribut dari string kondisi
-def _extract_attributes_from_condition(condition: str) -> list:
+def _extract_attributes_from_condition(condition: ConditionNode) -> list:
     if not condition:
         return []
-    
     pattern = r'\b\w+\.\w+\b'
-    matches = re.findall(pattern, condition)
+    matches = re.findall(pattern, repr(condition))
     return matches
 
 # helper untuk extract tables dari condition node
@@ -1221,7 +1273,7 @@ def _parse_single_condition(condition_str):
                 
                 left = _parse_column_reference(left_str)
                 right = _parse_value_or_column(right_str)
-                
+
                 return ConditionNode(left, op, right)
     
     raise Exception(f"Cannot parse condition: {condition_str}")
@@ -1252,16 +1304,11 @@ def _parse_value_or_column(value_str):
         else:
             return int(value_str)
     except ValueError:
-        pass
-    
-    # try number
-    try:
-        if '.' not in value_str:
-            return int(value_str)
+        if '.' in value_str:
+            parts = value_str.split('.', 1)
+            return ColumnNode(parts[1].strip(), parts[0].strip())
         else:
-            return float(value_str)
-    except ValueError:
-        return value_str
+            return ColumnNode(value_str)
 
 # parse columns string dan return list of ColumnNode atau "*"
 def parse_columns_from_string(columns_str):

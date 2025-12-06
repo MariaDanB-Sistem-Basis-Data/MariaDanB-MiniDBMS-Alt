@@ -14,11 +14,8 @@ import math
 class CostPlanner:
     def __init__(self, storage_manager=None):
         self.storage_manager = storage_manager
-
-        # TODO ==================== [HAPUS SAAT INTEGRASI] ====================
         self.BLOCK_SIZE = 4096 
-        self.PAGE_SIZE = 4096 
-         # ====================================================================
+        self.PAGE_SIZE = 4096
         
         # Cache untuk menyimpan statistik temporary tables (hasil join, selection, dll)
         # Key: identifier string, Value: dict dengan n_r, b_r, f_r, v_a_r
@@ -27,44 +24,42 @@ class CostPlanner:
     # =================== HELPER FUNCTIONS STATISTIK ===================
     
     def get_table_stats(self, table_name: str) -> dict:
-        """
-        mendapatkan statistik tabel dari storage manager atau temporary cache.
-        parameter:
-            table_name (str): nama tabel yang akan diambil statistiknya
-        return:
-            dict: {'n_r': int, 'b_r': int, 'l_r': int, 'f_r': int, 'v_a_r': dict}
-        
-        dipanggil oleh:
-            cost_table_scan
-        
-        integrasi dengan SM: hapus bagian [HAPUS SAAT INTEGRASI] 
-        dan uncomment bagian [UNCOMMENT SAAT INTEGRASI]
-        """
         # Cek apakah ini temporary table (hasil join/selection)
         if table_name in self.temp_table_stats:
             return self.temp_table_stats[table_name]
         
-        # TODO ==================== [UNCOMMENT SAAT INTEGRASI] ====================
-        # Ketika SM  ready, UNCOMMENT blok di bawah ini:
-        # memakai get_stats dari Storage Manager
-        # 
-        # if self.storage_manager:
-        #     stats = self.storage_manager.get_stats(table_name)
-        #     return {
-        #         'n_r': stats.n_r,
-        #         'b_r': stats.b_r,
-        #         'l_r': stats.l_r,
-        #         'f_r': stats.f_r,
-        #         'v_a_r': stats.v_a_r  # dict: {column_name: distinct_count}
-        #     }
-        # 
-        # # Jika table tidak ditemukan di SM
-        # raise ValueError(f"Table '{table_name}' not found in Storage Manager")
-        # ====================================================================
+        if hasattr(table_name, 'name'):
+            table_name = table_name.name
         
-        # TODO ==================== [HAPUS SAAT INTEGRASI] ====================
-        # Seluruh bagian dummy_stats di bawah ini HARUS DIHAPUS saat integrasi
-        # Dummy statistics (untuk testing tanpa SM)
+        if self.storage_manager:
+            try:
+                stats = self.storage_manager.get_stats(table_name)
+                
+                result = {
+                    'n_r': stats.n_r,
+                    'b_r': stats.b_r,
+                    'l_r': stats.l_r,
+                    'f_r': stats.f_r,
+                    'v_a_r': stats.v_a_r,  # dict: {column_name: distinct_count}
+                    'indexes': stats.i_r   # dict: {column_name: {'Type': str, 'Value': int}}
+                }
+                
+                # normalisasi format index dari SM ke format optimizer
+                normalized_indexes = {}
+                for col_name, idx_info in result['indexes'].items():
+                    idx_type = idx_info.get('Type', 'none').lower()
+                    idx_value = idx_info.get('Value', None)
+                    normalized_indexes[col_name] = {
+                        'type': 'b+' if idx_type == 'btree' else idx_type,
+                        'value': idx_value
+                    }
+                result['indexes'] = normalized_indexes
+                
+                return result
+                
+            except Exception as e:
+                print(f"[Optimizer] Could not get stats from SM for '{table_name}': {e}")
+        
         dummy_stats = {
             "students": {
                 'n_r': 10000,
@@ -223,36 +218,13 @@ class CostPlanner:
             table_name = table_name.name
         
         return dummy_stats.get(table_name.lower(), default_stats)
-        # ==================== [AKHIR BAGIAN HAPUS] ====================
     
     def get_index_info(self, table_stats: dict, attribute: str) -> dict:
-        """
-        parameter:
-            table_stats (dict): statistik tabel dari get_table_stats()
-            attribute (str): nama attribute/column
-        
-        return:
-            dict: {'type': str, 'value': int/None} 
-        
-        dipanggil: cost_table_scan, cost_join
-        """
         indexes = table_stats.get('indexes', {})
         return indexes.get(attribute, {'type': 'none', 'value': None})
     
     
     def extract_join_attributes(self, join_condition) -> tuple:
-        """
-        ekstrak attribute dari join condition (theta join).
-        
-        parameter:
-            join_condition: ConditionNode atau ThetaJoin dari node.val
-        
-        return:
-            tuple: ((left_table, left_attr), (right_table, right_attr)) 
-                   atau ((None, None), (None, None)) jika tidak bisa extract
-        
-        dipanggil: cost_join
-        """
         # Handle ThetaJoin object
         if hasattr(join_condition, 'condition'):
             condition = join_condition.condition
@@ -306,23 +278,6 @@ class CostPlanner:
     
 
     def store_temp_stats(self, table_id: str, n_r: int, b_r: int, f_r: int, v_a_r: dict, indexes: dict = None):
-        """
-        menyimpan statistik untuk temporary table (hasil join, selection, dll).
-        
-        parameter:
-            table_id (str): identifier unik untuk temporary table
-            n_r (int): jumlah tuples
-            b_r (int): jumlah blocks
-            f_r (int): blocking factor
-            v_a_r (dict): distinct values per attribute
-            indexes (dict): index info (default none untuk temp tables)
-        
-        return:
-            none
-        
-        dipanggil oleh:
-            cost_selection, cost_join
-        """
         self.temp_table_stats[table_id] = {
             'n_r': n_r,
             'b_r': b_r,
@@ -335,24 +290,6 @@ class CostPlanner:
     # ======================= HELPER FUNCTIONS - DISPLAY/FORMATTING =======================
     
     def _calculate_logical_node_selectivity(self, logical_node: LogicalNode, v_a_r: dict) -> float:
-        """
-        menghitung selectivity untuk logical node secara rekursif.
-        mendukung nested and/or.
-        
-        rumus:
-            - and: s1 * s2 * ... * sn (conjunction)
-            - or: 1 - (1-s1)*(1-s2)*...*(1-sn) (disjunction)
-        
-        parameter:
-            logical_node (LogicalNode): node dengan operator and/or
-            v_a_r (dict): {attribute: distinct_count}
-        
-        return:
-            float: combined selectivity (0.0 - 1.0)
-        
-        dipanggil oleh:
-            cost_selection
-        """
         if logical_node.operator == "AND":
             # Conjunction: multiply selectivities
             result = 1.0
@@ -382,19 +319,6 @@ class CostPlanner:
             return 0.5
     
     def _logical_node_to_string(self, logical_node: LogicalNode) -> str:
-        """
-        konversi logical node ke string untuk display.
-        mendukung nested structure.
-        
-        parameter:
-            logical_node (LogicalNode): node yang akan dikonversi
-        
-        return:
-            str: representasi string (contoh: "(age > 18 AND gpa > 3.0)")
-        
-        dipanggil oleh:
-            cost_selection
-        """
         parts = []
         for child in logical_node.childs:
             if isinstance(child, LogicalNode):
@@ -406,18 +330,6 @@ class CostPlanner:
         return operator.join(parts)
     
     def _condition_node_to_string(self, cond_node: ConditionNode) -> str:
-        """
-        konversi condition node ke string untuk display.
-        
-        parameter:
-            cond_node (ConditionNode): node yang akan dikonversi
-        
-        return:
-            str: representasi string (contoh: "age > 18", "gpa = 3.5")
-        
-        dipanggil oleh:
-            cost_selection
-        """
         # Extract attribute
         if isinstance(cond_node.attr, ColumnNode):
             attr_str = f"{cond_node.attr.table}.{cond_node.attr.column}" if cond_node.attr.table else cond_node.attr.column
@@ -439,26 +351,6 @@ class CostPlanner:
     # ======================= SELECTIVITY ESTIMATION =======================
     
     def estimate_selectivity(self, condition: ConditionNode, v_a_r: dict = None) -> float:
-        """
-        estimasi selectivity dari kondisi selection menggunakan v(a,r).
-        
-        rumus:
-            - equality (a = value): selectivity = 1/v(a,r)
-            - inequality (a ≠ value): selectivity = 1 - (1/v(a,r))
-            - comparison (a > value): selectivity ≈ 0.5 (tanpa histogram)
-            - like: selectivity ≈ 0.2
-            - in: selectivity ≈ n/v(a,r) dimana n = jumlah values
-        
-        parameter:
-            condition (ConditionNode): node dengan attr, op, value
-            v_a_r (dict): {attribute: distinct_count} dari tabel
-        
-        return:
-            float: selectivity (0.0 - 1.0)
-        
-        dipanggil oleh:
-            _calculate_logical_node_selectivity
-        """
         if v_a_r is None:
             v_a_r = {}
         
@@ -516,21 +408,6 @@ class CostPlanner:
     # ================================================ COST FUNCTIONS ================================================
     
     def cost_table_scan(self, node: QueryTree) -> dict:
-        """
-        cost untuk full table scan.
-        
-        rumus:
-            cost = b_r (jumlah blocks yang harus dibaca)
-        
-        parameter:
-            node (QueryTree): node dengan type="TABLE"
-        
-        return:
-            dict: {cost, n_r, b_r, f_r, v_a_r, operation, description}
-        
-        dipanggil oleh:
-            calculate_cost
-        """
         table_name = node.val
         stats = self.get_table_stats(table_name)
         
@@ -550,29 +427,6 @@ class CostPlanner:
         }
     
     def cost_selection(self, node: QueryTree, input_cost: dict) -> dict:
-        """
-        cost untuk operasi selection (σ - sigma).
-        mendukung logical node (and/or) dan condition node.
-        
-        rumus:
-            - output tuples: n_r * selectivity
-            - output blocks: ceil(output_tuples / f_r)
-            - cost: cost(input) (tidak ada tambahan i/o)
-            - v(a, σ_θ(r)): min(v(a,r), n_r(output))
-        
-        parameter:
-            node (QueryTree): node dengan type="SIGMA"
-            input_cost (dict): cost info dari child node
-        
-        return:
-            dict: {cost, n_r, b_r, f_r, v_a_r, selectivity, operation, description}
-        
-        dipanggil oleh:
-            calculate_cost
-        
-        todo: implementasi index scan jika sm ada info tinggi tree
-              cost = h_i + (selectivity * b_r)
-        """
         condition = node.val
         
         input_n_r = input_cost.get("n_r", 1000)
@@ -638,26 +492,6 @@ class CostPlanner:
         }
     
     def cost_projection(self, node: QueryTree, input_cost: dict) -> dict:
-        """
-        cost untuk operasi projection (π - pi).
-        
-        rumus:
-            - tanpa distinct: size = n_r (sama dengan input)
-            - dengan distinct: size = v(a,r)
-            - cost: cost(input) (tidak ada tambahan i/o)
-        
-        parameter:
-            node (QueryTree): node dengan type="PROJECT"
-            input_cost (dict): cost info dari child node
-        
-        return:
-            dict: {cost, n_r, b_r, f_r, v_a_r, operation, description}
-        
-        dipanggil oleh:
-            calculate_cost
-        
-        catatan: asumsi tidak ada distinct (belum diimplementasi)
-        """
         columns = node.val
         
         # Projection biasanya tidak mengubah jumlah tuples (kecuali DISTINCT)
@@ -686,39 +520,6 @@ class CostPlanner:
         }
     
     def cost_join(self, node: QueryTree, left_cost: dict, right_cost: dict) -> dict:
-        """
-        cost untuk operasi join (⋈ - bowtie).
-        support nested-loop join, index join (b+/hash), dan hash join.
-        
-        rumus nested-loop:
-            cost = b_r(r) + n_r(r) * b_r(s)
-        
-        rumus index join:
-            - b+ tree: cost = b_r(r) + n_r(r) * c
-              dimana c = kedalaman + 1
-            - hash: cost = b_r(r) + n_r(r) * c_bucket
-              dimana c_bucket = b_s / m (m = jumlah bucket)
-        
-        rumus hash join (kedua punya hash index):
-            cost = 3 * (b_r(r) + b_r(s))
-        
-        rumus estimasi join size:
-            - case 1 (no common): n_r(r ⋈ s) = n_r(r) * n_r(s)
-            - case 2 (key): n_r(r ⋈ s) ≤ n_r(s)
-            - case 3 (foreign key): n_r(r ⋈ s) = n_r(s)
-            - case 4 (not key): n_r(r ⋈ s) = (n_r(r) * n_r(s)) / max(v(a,r), v(a,s))
-        
-        parameter:
-            node (QueryTree): node dengan type="JOIN"
-            left_cost (dict): cost info dari left child
-            right_cost (dict): cost info dari right child
-        
-        return:
-            dict: {cost, n_r, b_r, f_r, v_a_r, join_cost, join_method, operation, description}
-        
-        dipanggil oleh:
-            calculate_cost
-        """
         left_n_r = left_cost.get("n_r", 1000)
         left_b_r = left_cost.get("b_r", 100)
         left_v_a_r = left_cost.get("v_a_r", {})
@@ -885,27 +686,6 @@ class CostPlanner:
         }
     
     def cost_sort(self, node: QueryTree, input_cost: dict) -> dict:
-        """
-        cost untuk operasi sort (order by).
-        menggunakan external merge sort.
-        
-        rumus:
-            - in-memory (b_r ≤ m): cost = b_r
-            - external: cost = 2 * b_r * (1 + ⌈log_{m-1}(b_r/m)⌉)
-            - m = jumlah blocks di memory buffer
-        
-        parameter:
-            node (QueryTree): node dengan type="SORT"
-            input_cost (dict): cost info dari child node
-        
-        return:
-            dict: {cost, n_r, b_r, f_r, v_a_r, sort_cost, operation, description}
-        
-        dipanggil oleh:
-            calculate_cost
-        
-        catatan: asumsi m = 100 blocks (harus diganti dengan config dari sm)
-        """
         input_b_r = input_cost.get("b_r", 100)
         input_n_r = input_cost.get("n_r", 1000)
         

@@ -49,6 +49,8 @@ from helper.helper import (
     _theta_pred,
     _extract_upper_operators,
     _reattach_upper_operators,
+    _is_natural,
+    _is_theta,
 )
 
 from helper.stats import get_stats
@@ -56,7 +58,9 @@ import random
 
 class OptimizationEngine:
 
-    def __init__(self):
+    def __init__(self, storage_manager=None):
+        self.storage_manager = storage_manager
+        
         # GA Configuration
         self.use_ga = True
         self.ga_population_size = 20
@@ -310,7 +314,7 @@ class OptimizationEngine:
         upper_operators = _extract_upper_operators(root)
 
         # 6) BUILD JOIN CONDITIONS FROM CURRENT TREE
-        join_conditions = self._extract_join_conditions_from_tree(root)
+        join_conditions, natural_joins = self._extract_join_info(root)
 
         # 7) GET STATS
         stats = get_stats()
@@ -325,10 +329,10 @@ class OptimizationEngine:
         if self.use_ga and len(tables) >= self.ga_threshold_tables:
             # Use both GA and Heuristic, compare results
             ga_tree, ga_cost, ga_details = self._genetic_algorithm_optimize(
-                tables, join_conditions, stats
+                tables, join_conditions, natural_joins, stats
             )
             heuristic_tree, heuristic_cost = self._heuristic_optimize(
-                tables, join_conditions, stats
+                tables, join_conditions, natural_joins, stats
             )
             
             # Choose the better one
@@ -354,7 +358,7 @@ class OptimizationEngine:
         else:
             # Use heuristic only for simple queries
             best_join_tree, cost = self._heuristic_optimize(
-                tables, join_conditions, stats
+                tables, join_conditions, natural_joins, stats
             )
             optimization_info.update({
                 'method': 'heuristic',
@@ -371,23 +375,23 @@ class OptimizationEngine:
         # 10) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
         return ParsedQuery(parsed_query.query, final_tree)
 
-    def _heuristic_optimize(self, tables, join_conditions, stats):
+    def _heuristic_optimize(self, tables, join_conditions, natural_joins, stats):
         orders = _some_permutations(tables, max_count=10)
         plans = []
         for order in orders:
-            plan = build_join_tree(order, join_conditions)
+            plan = build_join_tree(order, join_conditions, natural_joins)
             if plan:
                 plans.append(plan)
         
         if not plans:
-            default_plan = build_join_tree(tables, join_conditions)
+            default_plan = build_join_tree(tables, join_conditions, natural_joins)
             return default_plan, float('inf')
         
         best = choose_best(plans, stats)
         cost = plan_cost(best, stats)
         return best, cost
 
-    def _genetic_algorithm_optimize(self, tables, join_conditions, stats):
+    def _genetic_algorithm_optimize(self, tables, join_conditions, natural_joins, stats):
         # Initialize population
         population = self._ga_initialize_population(tables)
         
@@ -399,7 +403,7 @@ class OptimizationEngine:
             # Evaluate fitness for all individuals
             fitness_scores = []
             for individual in population:
-                plan = build_join_tree(individual, join_conditions)
+                plan = build_join_tree(individual, join_conditions, natural_joins)
                 cost = plan_cost(plan, stats) if plan else float('inf')
                 fitness_scores.append((individual, cost))
             
@@ -447,7 +451,7 @@ class OptimizationEngine:
             population = new_population
         
         # Build final best plan
-        best_tree = build_join_tree(best_individual, join_conditions)
+        best_tree = build_join_tree(best_individual, join_conditions, natural_joins)
         
         details = {
             'generations_run': generation + 1,
@@ -540,18 +544,14 @@ class OptimizationEngine:
         if not parsed_query or not parsed_query.query_tree:
             return 0
         
-        # TODO: ==================== [UNCOMMENT SAAT INTEGRASI SM] ====================
-        # Uncomment blok di bawah untuk menggunakan StorageManager:
-        #
-        # from storage_manager import StorageManager
-        # from helper.cost import CostPlanner
-        
-        # storage_manager = StorageManager(base_path='storage_manager/data')
-        # cost_planner = CostPlanner(storage_manager=storage_manager)
-        
-        # return cost_planner.get_cost(parsed_query)
-        
-        # ===========================================================================
+        # Use Storage Manager stats if available, otherwise fallback to dummy stats
+        if self.storage_manager:
+            from helper.cost import CostPlanner
+            try:
+                cost_planner = CostPlanner(storage_manager=self.storage_manager)
+                return cost_planner.get_cost(parsed_query)
+            except Exception as e:
+                print(f"[Optimizer] Failed to get cost from SM, using fallback: {e}")
         
         # Fallback to dummy stats
         root = parsed_query.query_tree
@@ -595,50 +595,29 @@ class OptimizationEngine:
         
         return node
     
-    def _extract_join_conditions_from_tree(self, node: QueryTree) -> dict:
-        mapping = {}
-
-        def walk(n):
-            if n is None:
-                return
-
-            if n.type == "JOIN":
-                pred = ""
-
-                # Try to extract using _theta_pred
-                try:
-                    pred = _theta_pred(n)
-                except:
-                    pred = ""
-
-                # Fallback extraction
-                if not pred:
-                    if hasattr(n.val, "condition"):
-                        pred = str(n.val.condition)
-                    elif isinstance(n.val, str):
-                        s = n.val.strip()
-                        if s.upper().startswith("THETA:"):
-                            pred = s.split(":",1)[1].strip()
-                        elif s.upper() != "CARTESIAN":
-                            pred = s
-
-                if pred:
-                    left_list = list(_tables_under(n.childs[0]))
-                    right_list = list(_tables_under(n.childs[1]))
-
-                    if left_list and right_list:
-                        # Main pair
-                        key = frozenset({left_list[0], right_list[0]})
-                        mapping[key] = pred
-
-                        # Additional pairs to prevent predicate loss
-                        for lt in left_list:
-                            for rt in right_list:
-                                mapping.setdefault(frozenset({lt, rt}), pred)
-
-            # Recursive walk
-            for c in getattr(n, "childs", []):
-                walk(c)
-
-        walk(node)
-        return mapping
+    def _extract_join_info(self, tree: QueryTree):
+        join_conditions = {}
+        natural_joins = set()
+        
+        def traverse(node):
+            if node.type == "JOIN":
+                if len(node.childs) >= 2:
+                    left_tables = _tables_under(node.childs[0])
+                    right_tables = _tables_under(node.childs[1])
+                    
+                    for lt in left_tables:
+                        for rt in right_tables:
+                            key = frozenset({lt, rt})
+                            
+                            if _is_natural(node):
+                                natural_joins.add(key)
+                            elif _is_theta(node):
+                                cond = _theta_pred(node)
+                                if cond:
+                                    join_conditions[key] = cond
+            
+            for child in node.childs:
+                traverse(child)
+        
+        traverse(tree)
+        return join_conditions, natural_joins
