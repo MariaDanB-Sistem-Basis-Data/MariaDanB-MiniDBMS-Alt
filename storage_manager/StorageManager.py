@@ -12,7 +12,7 @@ from storagemanager_helper.index import HashIndexManager, BPlusTreeIndexManager
 
 
 class StorageManager:
-    def __init__(self, base_path='data', frm_instance=None, recovery_enabled=False):
+    def __init__(self, base_path='data', frm_instance=None, recovery_enabled=True):
         self.base_path = base_path
         self.storage_path = base_path
         self.row_serializer = RowSerializer(with_lsn=(frm_instance is not None or recovery_enabled))
