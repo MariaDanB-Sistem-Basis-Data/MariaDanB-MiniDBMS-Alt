@@ -15,9 +15,11 @@ from storage_manager.storagemanager_model.data_retrieval import DataRetrieval as
 from storage_manager.storagemanager_model.data_write import DataWrite as dw
 from storage_manager.storagemanager_model.condition import Condition as cond
 from storage_manager.storagemanager_helper.schema import Schema as sch
+from storage_manager.storagemanager_helper.slotted_page import SlottedPage  
 from query_optimizer.QueryOptimizer import OptimizationEngine as oe
 from query_optimizer.model.query_tree import QueryTree as qt
-from storage_manager.storagemanager_helper.slotted_page import SlottedPage  
+from failure_recovery_manager.FailureRecovery import FailureRecoveryManager as frm
+from concurrency_control_manager.ConcurrencyControlManager import ConcurrencyControlManager as ccm
 
 class QueryProcessor:
     def __init__(
@@ -28,13 +30,18 @@ class QueryProcessor:
         data_write_factory: Callable[..., dw],
         condition_factory: Callable[..., cond],
         schema_factory: Callable[[], sch],
+        concurrency_control_manager: ccm = None,
+        failure_recovery_manager: frm = None,
     ) -> None:
         self.optimization_engine = optimization_engine
         self.storage_manager = storage_manager
+        self.concurrency_control_manager = concurrency_control_manager,
+        self.failure_recovery_manager = failure_recovery_manager,
         self._data_retrieval_factory = data_retrieval_factory
         self._data_write_factory = data_write_factory
         self._condition_factory = condition_factory
         self._schema_factory = schema_factory
+        self._transaction_id = None
         self._transaction_active = False
         self._transaction_changes: list = []
         self._table_aliases: dict = {}

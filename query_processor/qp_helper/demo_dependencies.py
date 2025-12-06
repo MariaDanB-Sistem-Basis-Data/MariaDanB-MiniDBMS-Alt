@@ -25,6 +25,9 @@ for candidate in (
     WORKSPACE_ROOT / "storage_manager",
     WORKSPACE_ROOT / "query_optimizer",
     WORKSPACE_ROOT / "query_processor",
+    WORKSPACE_ROOT / "failure_recovery_manager",
+    WORKSPACE_ROOT / "concurrency_control_manager",
+
 ):
     _maybe_add_path(candidate)
 
