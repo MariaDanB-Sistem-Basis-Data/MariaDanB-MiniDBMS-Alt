@@ -125,3 +125,200 @@ class DBMSClient:
             print(f"[Client Error] Failed to receive response: {e}")
             return None
 
+
+def print_result(response: Optional[Dict[str, Any]]):
+    if not response:
+        print("  [No response from server]")
+        return
+    
+    response_type = response.get("type", "unknown")
+    
+    if response_type == "error":
+        print(f"  [Error] {response.get('message', 'Unknown error')}")
+        return
+    
+    if response_type == "checkpoint":
+        success = response.get("success", False)
+        message = response.get("message", "")
+        print(f"  [Checkpoint] {message} - {'Success' if success else 'Failed'}")
+        return
+    
+    if response_type == "result":
+        transaction_id = response.get("transaction_id", -1)
+        message = response.get("message", "")
+        data = response.get("data")
+        
+        if response.get("error") or data == -1:
+            print(f"  [Transaction {transaction_id}] Error: {message}")
+            return
+        
+        print(f"  [Transaction {transaction_id}] {message}")
+        
+        # Print data
+        if data is None:
+            print("  Data: None")
+        elif isinstance(data, dict) and "rows" in data:
+            rows = data.get("rows", [])
+            columns = data.get("columns", [])
+            
+            if not rows:
+                print("  Rows: []")
+            else:
+                # Print as table
+                if columns:
+                    headers = columns
+                elif rows:
+                    headers = list(rows[0].keys())
+                else:
+                    headers = ["value"]
+                
+                widths = []
+                for header in headers:
+                    col_values = [str(row.get(header, "")) for row in rows]
+                    width = max(len(str(header)), max((len(v) for v in col_values), default=0))
+                    widths.append(width)
+                
+                # Print table
+                header_fmt = "  | " + " | ".join(f"{{:{w}}}" for w in widths) + " |"
+                sep = "  +-" + "-+-".join("-" * w for w in widths) + "-+"
+                
+                print(sep)
+                print(header_fmt.format(*headers))
+                print(sep)
+                for row in rows:
+                    values = [str(row.get(h, "")) for h in headers]
+                    print(header_fmt.format(*values))
+                print(sep)
+                print(f"  ({len(rows)} row{'s' if len(rows) != 1 else ''})")
+        else:
+            print(f"  Data: {data}")
+
+
+def run_interactive(client: DBMSClient):
+    print("\n=== MiniDBMS Client Interactive Shell ===")
+    print("Commands:")
+    print("  - Type SQL queries ending with semicolon (;)")
+    print("  - \\checkpoint  - Force checkpoint on server")
+    print("  - \\ping        - Check server connection")
+    print("  - exit or quit - Disconnect and exit")
+    print()
+    
+    buffer = []
+    
+    while True:
+        prompt = "SQL> " if not buffer else "...  "
+        
+        try:
+            line = input(prompt)
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print()
+            if buffer:
+                buffer.clear()
+                print("[Info] Cleared pending statement")
+            continue
+        
+        stripped = line.strip()
+        
+        # Empty line
+        if not buffer and not stripped:
+            continue
+        
+        # Exit command
+        if not buffer and stripped.lower() in {"exit", "quit"}:
+            break
+        
+        # Special commands
+        if not buffer and stripped == "\\checkpoint":
+            response = client.checkpoint()
+            print_result(response)
+            continue
+        
+        if not buffer and stripped == "\\ping":
+            if client.ping():
+                print("  [Ping] Server is responding")
+            else:
+                print("  [Ping] Server is not responding")
+            continue
+        
+        # Build query buffer
+        buffer.append(line)
+        statement = "\n".join(buffer).strip()
+        
+        # Execute when semicolon is found
+        if statement.endswith(";"):
+            buffer.clear()
+            response = client.execute_query(statement)
+            print_result(response)
+
+
+def run_batch(client: DBMSClient, queries: list[str]):
+    print("\n=== MiniDBMS Client Batch Mode ===")
+    
+    for i, query in enumerate(queries, 1):
+        print(f"\n[Query {i}] {query}")
+        response = client.execute_query(query)
+        print_result(response)
+
+
+def main():
+    host = "127.0.0.1"
+    port = 13523
+    
+    args = sys.argv[1:]
+    
+    if "--help" in args or "-h" in args:
+        print("format: python client.py [OPTIONS]")
+        print("\nOptions:")
+        print("  --host HOST       Server host (default: 127.0.0.1)")
+        print("  --port PORT       Server port (default: 13523)")
+        print("  --interactive     default, mode interaktif")
+        print("  --batch QUERY     Run satu query")
+        print("  --help, -h        ya pesan ini")
+        return
+    
+    # host & port
+    for i, arg in enumerate(args):
+        if arg == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+        elif arg == "--port" and i + 1 < len(args):
+            port = int(args[i + 1])
+    
+    # Create client and connect
+    client = DBMSClient(host=host, port=port)
+    
+    if not client.connect():
+        return
+    
+    try:
+        # mode
+        if "--batch" in args:
+            batch_idx = args.index("--batch")
+            if batch_idx + 1 < len(args):
+                query = args[batch_idx + 1]
+                if not query.endswith(";"):
+                    query += ";"
+                run_batch(client, [query])
+        elif "--interactive" in args or len(args) == 0 or all(arg.startswith("--") for arg in args):
+            run_interactive(client)
+        else:
+            # kweri demo
+            demo_queries = [
+                "BEGIN TRANSACTION;",
+                "SELECT * FROM Student;",
+                "UPDATE Student SET GPA = 3.9 WHERE StudentID = 1;",
+                "SELECT StudentID, FullName, GPA FROM Student WHERE GPA > 3.0;",
+                "COMMIT;",
+            ]
+            run_batch(client, demo_queries)
+            
+    except KeyboardInterrupt:
+        print("\n[Client] Interrupted by user")
+    finally:
+        client.disconnect()
+
+
+if __name__ == "__main__":
+    main()
