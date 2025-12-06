@@ -78,12 +78,6 @@ class QueryProcessor:
             elif query_type == QueryType.ROLLBACK:
                 result_data = self.execute_rollback()
 
-            elif query_type == QueryType.LIST_ALL_TABLES:
-                result_data = self.execute_list_tables(query)
-
-            elif query_type == QueryType.LIST_COLUMNS:
-                result_data = self.execute_list_all_columns(query)
-
             elif query_type in DATA_QUERIES or query_type in TRANSACTION_QUERIES:
                 return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=f"Cek helper/query_utils.py, harusnya ini query type dari bonus yg belum consider dikerjain (query_type: {query_type})", data=0, query=query)
 
@@ -878,21 +872,3 @@ class QueryProcessor:
             
         except Exception as e:
             return False
-
-    # execute list all columns : for executing \d
-    def execute_list_all_columns(self, query) -> bool:
-        try:
-
-            for s in self.storage_manager.schema_manager.list_tables():
-                print(s)
-            return True
-            
-        except Exception as e:
-            raise ValueError(f"Error list all columns: {e}")
-    
-    def execute_list_tables(self, query) -> bool:
-        try:
-            return True
-            
-        except Exception as e:
-            raise ValueError(f"Error list tables: {e}")
