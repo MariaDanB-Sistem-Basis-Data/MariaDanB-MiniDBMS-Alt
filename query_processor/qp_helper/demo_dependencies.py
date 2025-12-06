@@ -8,6 +8,9 @@ from typing import Any, Iterable, TYPE_CHECKING
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE_ROOT = ROOT.parent
 
+print("ROOT:", ROOT)
+print("WORKSPACE_ROOT:", WORKSPACE_ROOT)
+
 
 def _maybe_add_path(path: Path) -> None:
     if not path.exists():
@@ -18,13 +21,12 @@ def _maybe_add_path(path: Path) -> None:
 
 
 for candidate in (
-    ROOT / "storage_manager",
-    ROOT / "query_optimizer",
-    WORKSPACE_ROOT / "Storage-Manager",
-    WORKSPACE_ROOT / "Query-Optimizer",
+    WORKSPACE_ROOT,
+    WORKSPACE_ROOT / "storage_manager",
+    WORKSPACE_ROOT / "query_optimizer",
+    WORKSPACE_ROOT / "query_processor",
 ):
     _maybe_add_path(candidate)
-
 
 def _import_attr(candidates: Iterable[tuple[str, str]]) -> Any:
     last_error: ModuleNotFoundError | None = None
@@ -78,7 +80,7 @@ SchemaCls = _import_attr(
     ]
 )
 
-_DEFAULT_DATA_DIR = (ROOT / "storage_manager" / "data").resolve()
+_DEFAULT_DATA_DIR = (ROOT / "testing_data" ).resolve()
 _DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 if TYPE_CHECKING:

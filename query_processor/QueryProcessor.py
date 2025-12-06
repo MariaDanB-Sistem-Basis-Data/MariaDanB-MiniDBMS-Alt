@@ -17,6 +17,7 @@ from storage_manager.storagemanager_model.condition import Condition as cond
 from storage_manager.storagemanager_helper.schema import Schema as sch
 from query_optimizer.QueryOptimizer import OptimizationEngine as oe
 from query_optimizer.model.query_tree import QueryTree as qt
+from storage_manager.storagemanager_helper.slotted_page import SlottedPage  
 
 class QueryProcessor:
     def __init__(
@@ -46,10 +47,6 @@ class QueryProcessor:
         query_type = get_query_type(query)
 
         try:
-            # NOTE: harusnya yang handle keywords kaya FROM, JOIN, WHERE itu dari optimizer karena kan itu keyword bagian dari select atau query lain. soalnya disini cuma ngeidentifikasi tipe query dari keyword awalnya doang (CMIIW)
-
-            # NOTE: feel free to adjust, kode ini dibikin dalam kondisi mengantuk kurang tidur
-
             result_data = Rows.from_list([])
             if query_type == QueryType.SELECT:
                 result_data = self.execute_select(query)
@@ -79,7 +76,13 @@ class QueryProcessor:
                 result_data = self.execute_abort(query)
 
             elif query_type == QueryType.ROLLBACK:
-                result_data = self.execute_rollback(query)
+                result_data = self.execute_rollback()
+
+            elif query_type == QueryType.LIST_ALL_TABLES:
+                result_data = self.execute_list_tables(query)
+
+            elif query_type == QueryType.LIST_COLUMNS:
+                result_data = self.execute_list_all_columns(query)
 
             elif query_type in DATA_QUERIES or query_type in TRANSACTION_QUERIES:
                 return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=f"Cek helper/query_utils.py, harusnya ini query type dari bonus yg belum consider dikerjain (query_type: {query_type})", data=0, query=query)
@@ -92,24 +95,28 @@ class QueryProcessor:
             return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Success", data=result_data, query=query)
 
         except Exception as e:
-            error_message = f"Error: {str(e)}"
-            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message=error_message, data=-1, query=query)
+            print(f"Error processing query: {e}")
+            return ExecutionResult(transaction_id=transaction_id, timestamp=datetime.now(), message="Error occured when processing query", data=-1, query=query)
 
     # execute SELECT query:
     # 1. parse query menggunakan query optimizer
     # 2. optimize query tree
     # 3. execute query tree dan retrieve data dari storage manager
     def execute_select(self, query: str) -> Union[Rows, int]:
-        self._table_aliases = {}
-        parsed_query = self.optimization_engine.parse_query(query)
-        optimized_query = self.optimization_engine.optimize_query(parsed_query)
-        if optimized_query.query_tree is None:
-            raise ValueError("SELECT parsing failed - optimizer produced empty query tree")
-        
-        self._extract_table_aliases(optimized_query.query_tree)
-        result_data = self._execute_query_tree(optimized_query.query_tree)
-        
-        return result_data
+        try:
+            self._table_aliases = {}
+            parsed_query = self.optimization_engine.parse_query(query)
+            optimized_query = self.optimization_engine.optimize_query(parsed_query)
+            if optimized_query.query_tree is None:
+                return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
+            self._extract_table_aliases(optimized_query.query_tree)
+            result_data = self._execute_query_tree(optimized_query.query_tree)
+            
+            return result_data
+            
+        except Exception as e:
+            print(f"Error executing SELECT query: {e}")
+            return -1
 
     def _extract_table_aliases(self, node: qt):
         if node is None:
@@ -118,14 +125,15 @@ class QueryProcessor:
         if node.type == "TABLE":
             val_str = str(node.val)
             if hasattr(node.val, 'name'):
-                val_str = str(node.val.name)
+                val_str = str(node.val.name) # type: ignore
             
             parts = val_str.split()
             if len(parts) == 2:
                 table_name, alias = parts
                 self._table_aliases[alias] = table_name
-            elif len(parts) == 1 and hasattr(node.val, 'alias') and node.val.alias:
-                self._table_aliases[node.val.alias] = parts[0]
+            elif len(parts) == 1 and hasattr(node.val, 'alias') :
+                if (node.val.alias): # type: ignore
+                    self._table_aliases[node.val.alias] = parts[0] # type: ignore
         
         for child in node.childs:
             self._extract_table_aliases(child)
@@ -135,12 +143,17 @@ class QueryProcessor:
     # 2. extract table, columns, and conditions dari query tree
     # 3. execute update via storage manager
     def execute_update(self, query: str) -> Union[Rows, int]:
-        parsed_query = self.optimization_engine.parse_query(query)
-        if parsed_query.query_tree is None:
-            raise ValueError("UPDATE parsing failed - optimizer produced empty query tree")
-        result = self._execute_update_tree(parsed_query.query_tree)
-        
-        return Rows.from_list([f"Updated {result} rows"])
+        try:
+            parsed_query = self.optimization_engine.parse_query(query)
+            if parsed_query.query_tree is None:
+                return Rows.from_list(["UPDATE parsing failed - optimizer produced empty query tree"])
+            result = self._execute_update_tree(parsed_query.query_tree)
+            
+            return Rows.from_list([f"Updated {result} rows"])
+            
+        except Exception as e:
+            print(f"Error executing UPDATE query: {e}")
+            return -1
 
     # recursively execute query tree untuk SELECT operations
     # traverse dari root ke leaf (TABLE node) dan apply operations saat return
@@ -151,7 +164,7 @@ class QueryProcessor:
         if node.type == "TABLE":
             val_str = str(node.val)
             if hasattr(node.val, 'name'):
-                val_str = str(node.val.name)
+                val_str = str(node.val.name) # type: ignore
             parts = val_str.split()
             table_name = parts[0]
             return self._fetch_table_data(table_name)
@@ -167,15 +180,8 @@ class QueryProcessor:
         elif node.type == "SIGMA":
             return self._apply_selection(child_results[0], node.val)
         
-        elif node.type == "JOIN" or node.type == "NATURAL_JOIN" or node.type == "THETA_JOIN":
-            left_with_prefix = self._add_table_prefixes(child_results[0], self._get_table_name(node.childs[0]))
-            right_with_prefix = self._add_table_prefixes(child_results[1], self._get_table_name(node.childs[1]))
-            return self._apply_join(left_with_prefix, right_with_prefix, node.val, node.type)
-        
-        elif node.type == "CARTESIAN":
-            left_with_prefix = self._add_table_prefixes(child_results[0], self._get_table_name(node.childs[0]))
-            right_with_prefix = self._add_table_prefixes(child_results[1], self._get_table_name(node.childs[1]))
-            return self._apply_cartesian(left_with_prefix, right_with_prefix)
+        elif node.type == "JOIN":
+            return self._apply_join(child_results[1], child_results[0], node.val)
         
         elif node.type == "SORT":
             return self._apply_sort(child_results[0], node.val)
@@ -224,17 +230,22 @@ class QueryProcessor:
         return 0
 
     def _fetch_table_data(self, table_name: Any) -> Rows:
-        if hasattr(table_name, 'name'):
-            table_str = str(table_name.name)
-        else:
-            table_str = str(table_name)
-        
-        data_retrieval = self._data_retrieval_factory(table=table_str, column="*", conditions=[])
-        result = self.storage_manager.read_block(data_retrieval)
-        
-        if result is not None and isinstance(result, list):
-            return Rows.from_list(result)
-        else:
+        try:
+            if hasattr(table_name, 'name'):
+                table_str = str(table_name.name)
+            else:
+                table_str = str(table_name)
+            
+            data_retrieval = self._data_retrieval_factory(table=table_str, column="*", conditions=[])
+            result = self.storage_manager.read_block(data_retrieval)
+            
+            if result is not None and isinstance(result, list):
+                return Rows.from_list(result, table_source=table_str)
+            else:
+                return Rows.from_list([])
+                
+        except Exception as e:
+            print(f"Error fetching data from Storage Manager: {e}")
             return Rows.from_list([])
 
     def _resolve_column_name(self, column: str) -> str:
@@ -243,39 +254,6 @@ class QueryProcessor:
             if prefix in self._table_aliases:
                 return f"{self._table_aliases[prefix]}.{col_name}"
         return column
-
-    def _get_table_name(self, node: qt) -> str:
-        if node is None:
-            return ""
-        if node.type == "TABLE":
-            val_str = str(node.val)
-            if hasattr(node.val, 'name'):
-                val_str = str(node.val.name)
-            return val_str.split()[0]
-        for child in node.childs:
-            name = self._get_table_name(child)
-            if name:
-                return name
-        return ""
-    
-    def _add_table_prefixes(self, data: Rows, table_name: str) -> Rows:
-        if not table_name or data.rows_count == 0:
-            return data
-        
-        prefixed_data = []
-        for row in data.data:
-            if isinstance(row, dict):
-                prefixed_row = {}
-                for key, value in row.items():
-                    if '.' in key or key.startswith('_'):
-                        prefixed_row[key] = value
-                    else:
-                        prefixed_row[f"{table_name}.{key}"] = value
-                prefixed_data.append(prefixed_row)
-            else:
-                prefixed_data.append(row)
-        
-        return Rows.from_list(prefixed_data)
 
     # apply PROJECT operation - select specific columns
     def _apply_projection(self, data: Rows, columns: Any) -> Rows:
@@ -292,24 +270,6 @@ class QueryProcessor:
         
         if not col_list:
             return data
-        
-        # Validate columns exist in first row (if data exists)
-        if data.rows_count > 0:
-            first_row = list(data.data)[0] if data.data else None
-            if first_row and isinstance(first_row, dict):
-                available_cols = set(first_row.keys())
-                # Also check for simple column names without table prefix
-                available_simple_cols = set()
-                for col in available_cols:
-                    if '.' in col:
-                        available_simple_cols.add(col.split('.', 1)[1])
-                    else:
-                        available_simple_cols.add(col)
-                
-                for req_col in col_list:
-                    col_name = req_col.split('.', 1)[1] if '.' in req_col else req_col
-                    if req_col not in available_cols and col_name not in available_simple_cols:
-                        raise ValueError(f"Column '{req_col}' does not exist in table")
         
         projected_data = []
         for row in data.data:
@@ -354,8 +314,9 @@ class QueryProcessor:
         return Rows.from_list(projected_data)
 
     # apply SIGMA operation - filter rows based on WHERE condition
+
+    # apply SIGMA operation - filter rows based on WHERE condition
     def _apply_selection(self, data: Rows, condition: Any) -> Rows:
-        # Normalize condition to internal format
         normalized = NormalizedCondition.normalize(condition)
         if not normalized:
             return data
@@ -363,111 +324,75 @@ class QueryProcessor:
         col_name = self._resolve_column_name(normalized.column)
         operator = normalized.operator
         value = normalized.value
-        
-        is_column_comparison = False
-        value_col_name = None
-        
-        def strip_prefix(col):
-            if '.' in col:
-                return col.split('.', 1)[1]
-            return col
-        
-        if '.' in value or (value and not value[0].isdigit() and "'" not in value and '"' not in value):
-            value_col_name = self._resolve_column_name(value)
-            sample_row = list(data.data)[0] if data.rows_count > 0 else None
-            if sample_row and isinstance(sample_row, dict):
-                if value_col_name in sample_row or strip_prefix(value_col_name) in sample_row or value in sample_row or strip_prefix(value) in sample_row:
-                    is_column_comparison = True
-        
         filtered_data = []
         
         for row in data.data:
-            if not isinstance(row, dict):
-                continue
+            if isinstance(row, dict):
+                row_value = None
                 
-            left_value = None
-            if col_name in row:
-                left_value = row[col_name]
-            elif strip_prefix(col_name) in row:
-                left_value = row[strip_prefix(col_name)]
-            else:
-                continue
-            
-            if is_column_comparison:
-                right_value = None
-                if value_col_name in row:
-                    right_value = row[value_col_name]
-                elif strip_prefix(value_col_name) in row:
-                    right_value = row[strip_prefix(value_col_name)]
-                elif value in row:
-                    right_value = row[value]
-                elif strip_prefix(value) in row:
-                    right_value = row[strip_prefix(value)]
+                if col_name in row:
+                    row_value = str(row[col_name])
                 else:
-                    continue
-            else:
-                right_value = value
+                    simple_col = col_name.split('.')[-1]
+                    if simple_col in row:
+                        row_value = str(row[simple_col])
+                    else:
+                        for key in row.keys():
+                            if key.endswith('.' + simple_col) or key == simple_col:
+                                row_value = str(row[key])
+                                break
             
-            try:
-                left_num = float(left_value)
-                right_num = float(right_value)
+                if row_value is None:
+                    continue
                 
-                if operator == "=" and left_num == right_num:
-                    filtered_data.append(row)
-                elif operator == "!=" and left_num != right_num:
-                    filtered_data.append(row)
-                elif operator == ">" and left_num > right_num:
-                    filtered_data.append(row)
-                elif operator == "<" and left_num < right_num:
-                    filtered_data.append(row)
-                elif operator == ">=" and left_num >= right_num:
-                    filtered_data.append(row)
-                elif operator == "<=" and left_num <= right_num:
-                    filtered_data.append(row)
-            except (ValueError, TypeError):
-                left_str = str(left_value)
-                right_str = str(right_value)
-                
-                if operator == "=" and left_str == right_str:
-                    filtered_data.append(row)
-                elif operator == "!=" and left_str != right_str:
+                if self._evaluate_condition(row_value, operator, value):
                     filtered_data.append(row)
         
         return Rows.from_list(filtered_data)
 
     # apply join operation - support JOIN, NATURAL_JOIN, and THETA_JOIN
-    def _apply_join(self, left_data: Rows, right_data: Rows, condition: str, join_type: str) -> Rows:
+    def _apply_join(self, left_data: Rows, right_data: Rows, condition: str) -> Rows:
         if not left_data.data or not right_data.data:
             return Rows.from_list([])
         
         result = []
-        
-        if join_type == "JOIN":
-            # inner join: hanya me-return baris yang memenuhi kondisi join
-            result = self._theta_join(left_data.data, right_data.data, condition)
+
+        # i know its hacky, but its 2 am and isinstance not working because of import issues
+        if repr(condition) == "NATURAL":
+            join_type = "NATURAL_JOIN"
+        elif isinstance(condition, str):
+            join_type = "CARTESIAN"
+        else:
+            join_type = "THETA_JOIN"
+
+        if join_type == "CARTESIAN":
+            # cartesian product
+            result = self._apply_cartesian(left_data, right_data)
         
         elif join_type == "NATURAL_JOIN":
             # natural join: join berdasarkan kolom dengan value yang sama
-            result = self._natural_join(left_data.data, right_data.data)
+            result = self._natural_join(left_data, right_data)
         
         elif join_type == "THETA_JOIN":
             # theta join: join berdasarkan kondisi tertentu (=, <, >, <=, >=, !=)
-            result = self._theta_join(left_data.data, right_data.data, condition)
+            result = self._theta_join(left_data, right_data, condition)
         
-        return Rows.from_list(result)
+        return result
     
     # natural join berdasarkan kolom dengan nilai yang sama
-    def _natural_join(self, left_rows: list, right_rows: list) -> list:
+    def _natural_join(self, left: Rows, right: Rows) -> Rows:
+        left_rows = left.data
+        right_rows = right.data
         result = []
         
         if not left_rows or not right_rows:
-            return result
+            return Rows.from_list[result]
         
         left_first = left_rows[0]
         right_first = right_rows[0]
         
         if not isinstance(left_first, dict) or not isinstance(right_first, dict):
-            return result
+            return Rows.from_list(result)
         
         common_cols = set(left_first.keys()) & set(right_first.keys())
         
@@ -485,100 +410,77 @@ class QueryProcessor:
                             combined[key] = val
                     result.append(combined)
         
-        return result
+        return Rows.from_list(result)
     
     # theta join berdasarkan kondisi
-    def _theta_join(self, left_rows: list, right_rows: list, condition: str) -> list:
+    def _theta_join(self, left: Rows, right: Rows, condition: str) -> Rows:
+        left_rows = left.data
+        right_rows = right.data
+
+        left_table = left.table_source
+        right_table = right.table_source
+
         result = []
-        
-        if not condition:
-            # jika tidak ada condition, return cartesian product
-            return self._cartesian_join(left_rows, right_rows)
-        
-        # parse condition: format "left_col op right_col" atau "left_col op value"
-        operators = [">=", "<=", "!=", "=", ">", "<"]
-        operator = None
-        left_col = None
-        right_col_or_value = None
-        
-        for op in operators:
-            if op in condition:
-                parts = condition.split(op)
-                left_col = parts[0].strip()
-                right_col_or_value = parts[1].strip().strip("'\"")
-                operator = op
-                break
-        
-        if not operator or not left_col:
-            return self._cartesian_join(left_rows, right_rows)
-        
+
+        conds = condition.condition
+        conds_left_table = conds.attr.table
+        conds_right_table = conds.value.table
+
+        if conds_left_table == right_table or conds_right_table == left_table:
+            left_rows, right_rows = right_rows, left_rows
+
         # join rows berdasarkan kondisi
         for left_row in left_rows:
             for right_row in right_rows:
                 if isinstance(left_row, dict) and isinstance(right_row, dict):
-                    if left_col in left_row:
-                        left_val = left_row[left_col]
+                    if conds.attr.column in left_row:
+                        left_val = left_row[conds.attr.column]
                         
                         # cek apakah right_col_or_value adalah kolom di right_row
-                        if right_col_or_value in right_row:
-                            right_val = right_row[right_col_or_value]
+                        if conds.value.column in right_row:
+                            right_val = right_row[conds.value.column]
                         else:
-                            right_val = right_col_or_value
-                        
+                            right_val = conds.value
+
                         # evaluasi condition
-                        if self._evaluate_condition(left_val, operator, right_val):
+                        if self._evaluate_condition(left_val, conds.op, right_val):
                             combined = {**left_row, **right_row}
                             result.append(combined)
         
-        return result
-    
-    # cartesian product untuk join
-    def _cartesian_join(self, left_rows: list, right_rows: list) -> list:
-        result = []
-        for left_row in left_rows:
-            for right_row in right_rows:
-                if isinstance(left_row, dict) and isinstance(right_row, dict):
-                    combined = {**left_row, **right_row}
-                    result.append(combined)
-        return result
+        return Rows.from_list(result)
     
     # evaluasi kondisi untuk join
     def _evaluate_condition(self, left_val, operator: str, right_val) -> bool:
         try:
-            # coba convert ke float untuk numeric comparison
-            left_num = float(left_val)
-            right_num = float(right_val)
+            row_value_num = float(left_val)
+            value_num = float(right_val)
+            
+            epsilon = 1e-9
             
             if operator == "=":
-                return left_num == right_num
-            elif operator == "!=":
-                return left_num != right_num
+                if abs(row_value_num - value_num) < epsilon:
+                    return True
+            elif operator == "!=" or operator == "<>":
+                if abs(row_value_num - value_num) >= epsilon:
+                    return True
             elif operator == ">":
-                return left_num > right_num
+                if row_value_num > value_num:
+                    return True
             elif operator == "<":
-                return left_num < right_num
+                if row_value_num < value_num:
+                    return True
             elif operator == ">=":
-                return left_num >= right_num
+                if row_value_num >= value_num - epsilon:
+                    return True
             elif operator == "<=":
-                return left_num <= right_num
-        except (ValueError, TypeError):
-            # string comparison jika tidak bisa convert ke number
-            left_str = str(left_val)
-            right_str = str(right_val)
+                if row_value_num <= value_num + epsilon:
+                    return True
+        except ValueError:
+            if operator == "=" and left_val == right_val:
+                return True
+            elif (operator == "!=" or operator == "<>") and left_val != right_val:
+                return True
             
-            if operator == "=":
-                return left_str == right_str
-            elif operator == "!=":
-                return left_str != right_str
-            elif operator == ">":
-                return left_str > right_str
-            elif operator == "<":
-                return left_str < right_str
-            elif operator == ">=":
-                return left_str >= right_str
-            elif operator == "<=":
-                return left_str <= right_str
-        
         return False
 
     # apply CARTESIAN product
@@ -596,8 +498,8 @@ class QueryProcessor:
 
         # column = list of OrderByItem
         for node in reversed(column):
-            column_str = node.column.column
-            ascending = node.direction.upper() == "ASC"
+            column_str = node.column.column  # type: ignore
+            ascending = node.direction.upper() == "ASC" # type: ignore
             data.data.sort(key=lambda datum: datum.get(column_str), reverse=not ascending)
 
         # NOTE : DONE yak bang -bri
@@ -683,9 +585,9 @@ class QueryProcessor:
                 
                 # untuk handle InsertData 
                 if hasattr(val, "table") and hasattr(val, "columns") and hasattr(val, "values"):
-                    table_name = val.table
-                    cols_list = list(val.columns) if val.columns else []
-                    values_list = list(val.values) if val.values else []
+                    table_name = val.table # type: ignore
+                    cols_list = list(val.columns) if val.columns else [] # type: ignore
+                    values_list = list(val.values) if val.values else [] # type: ignore
                 # Legacy string format: "table|columns|values"
                 elif isinstance(val, str):
                     parts = val.split("|", 2)
@@ -821,7 +723,11 @@ class QueryProcessor:
             raw_type = parts[1]
             
             col_type = raw_type.lower()
-            col_size = 0
+            col_size = 1
+
+            # use regex to validate data types varchar(*)
+            if col_type not in ['int', 'integer', 'float', 'char'] and re.match(r"varchar\(\d+\)", col_type) is None:
+                return Rows.from_list([f"Error: Unsupported data type '{col_type}' for column '{col_name}'."])
 
             # handle Varchar/Char with size (e.g., varchar(50))
             if '(' in raw_type and ')' in raw_type:
@@ -831,9 +737,12 @@ class QueryProcessor:
                     col_size = int(type_match.group(2))
             
             # handle integers (fixed size 4 bytes)
-            elif col_type in ['int', 'integer']:
+            elif col_type in ['int', 'integer', 'float']:
                 col_size = 4
             
+            if col_type == 'integer':
+                col_type = 'int'
+
             # add to schema
             try:
                 add_attribute = getattr(new_schema, "add_attribute")
@@ -845,32 +754,79 @@ class QueryProcessor:
         self.storage_manager.schema_manager.add_table_schema(table_name, new_schema)
         self.storage_manager.schema_manager.save_schemas()
 
-        # physical data file 
+        # physical data file with proper page structure
         file_path = os.path.join(self.storage_manager.base_path, f"{table_name}.dat")
         try:
+            empty_page = SlottedPage()
             with open(file_path, 'wb') as f:
-                pass # Create empty file
+                f.write(empty_page.serialize())
         except IOError as e:
             return Rows.from_list([f"Error creating table file: {str(e)}"])
 
+        self.storage_manager.schema_manager.load_schemas()
         return Rows.from_list([f"Table '{table_name}' created successfully."])
 
     def execute_drop_table(self, query: str) -> Union[Rows, int]:
-        return Rows.from_list(["DROP TABLE - to be implemented (info cara drop tabel dari storagemngr)"])
+
+        # parse query
+        match = re.search(r"(?i)DROP\s+TABLE\s+([A-Za-z_]\w*)", query)
+        if not match:
+            return Rows.from_list(["Syntax Error: Invalid DROP TABLE format."])
+
+        table_name = match.group(1)
+
+        # delete .dat file
+        dat_path = os.path.join(self.storage_manager.base_path, f"{table_name}.dat")
+        if os.path.exists(dat_path):
+            os.remove(dat_path)
+
+        # delete from schema
+        self.storage_manager.schema_manager.schemas.pop(table_name)
+        self.storage_manager.schema_manager.save_schemas()
+        self.storage_manager.schema_manager.load_schemas()
+
+        # delete from indexing (asumsikan tidak di indexing)
+
+        # detect if .dat is really has been deleted
+        if os.path.exists(dat_path):
+            return Rows.from_list([f"Table '{table_name}' is not deleted successfully."])
+
+        return Rows.from_list([f"Table '{table_name}' deleted successfully."])
 
 
 
     # placeholder BEGIN TRANSACTION
     def execute_begin_transaction(self, query: str) -> Union[Rows, int]:
+
+        # parse the query
+
+        # init the transaction
+
+        # detect every query needed
+
+        # for every query, execute thoroughly based on its type
+
         return Rows.from_list(["BEGIN TRANSACTION - to be implemented"])
 
     # placeholder COMMIT 
-    def execute_commit(self, query: str) -> Union[Rows, int]:
+    def execute_commit(self, query : str) -> Union[Rows, int]:
+
+        # parse the commit word
+
+        # deactivate the transaction id
+
         return Rows.from_list(["COMMIT - to be implemented"])
 
     # placeholder rollback
-    def execute_rollback(self, query: str) -> Union[Rows, int]:
-        # NOTE: di abort ada rollback otomatis?
+    def execute_rollback(self) -> Union[Rows, int]:
+        # NOTE: di abort ada rollback otomatis? yup -bri
+        
+        # get the transaction id
+
+        # pass the transaction id to the fr 
+
+        # do rollback based on that transaction id
+
         return Rows.from_list(["ROLLBACK - to be implemented"])
 
 
@@ -911,6 +867,23 @@ class QueryProcessor:
             print(f"Error rolling back transaction: {e}")
             return False
 
+    # execute list all columns : for executing \d
+    def execute_list_all_columns(self, query) -> bool:
+        try:
 
-
-
+            for s in self.storage_manager.schema_manager.list_tables():
+                print(s)
+            return True
+            
+        except Exception as e:
+            print(f"Error rolling back transaction: {e}")
+            return False
+    
+    # rollback all changes made in the current transaction
+    def execute_list_tables(self, query) -> bool:
+        try:
+            return True
+            
+        except Exception as e:
+            print(f"Error rolling back transaction: {e}")
+            return False
