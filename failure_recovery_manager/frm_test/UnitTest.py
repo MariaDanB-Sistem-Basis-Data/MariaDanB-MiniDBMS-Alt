@@ -736,6 +736,24 @@ class Test04_EdgeCases(unittest.TestCase):
 
 
 class Test05_NewFixes(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        """Clear logs before running this test class"""
+        log_file = Path("frm_logs/wal.log")
+        if log_file.exists():
+            # Backup existing log
+            import shutil
+            shutil.copy(log_file, "frm_logs/wal_backup_test05.log")
+            log_file.write_text("")
+
+        from FailureRecovery import FailureRecoveryManager
+        from frm_helper.WriteAheadLog import WriteAheadLog
+
+        FailureRecoveryManager.reset_instance()
+        WriteAheadLog.reset_instance()
+
+        print("\n[INFO] Test05: Cleared wal.log and reset singleton instances")
+
     def setUp(self):
         self.log_path = "frm_logs/wal.log"
         self.frm = getFailureRecoveryManager()
@@ -1202,6 +1220,213 @@ class Test05_NewFixes(unittest.TestCase):
         assert len(end_logs) >= 1, "END log should be written after recovery"
 
         print(f"[OK] Transaction properly terminated with END log")
+
+    def test_25_multi_row_update_logging_and_recovery(self):
+        print("\n[TEST 25] Testing multi-row UPDATE logging and abort recovery...")
+
+        # Setup test data
+        mini_sm = get_mini_storage_manager()
+        mini_sm.tables['employees'] = [
+            {'id': 1, 'name': 'Alice', 'salary': 5000, '_lsn': 0},
+            {'id': 2, 'name': 'Bob', 'salary': 6000, '_lsn': 0},
+            {'id': 3, 'name': 'Charlie', 'salary': 7000, '_lsn': 0},
+            {'id': 4, 'name': 'David', 'salary': 5500, '_lsn': 0},
+            {'id': 5, 'name': 'Eve', 'salary': 6500, '_lsn': 0},
+        ]
+
+        initial_salaries = {row['id']: row['salary'] for row in mini_sm.tables['employees']}
+        print(f"[INFO] Initial salaries: {initial_salaries}")
+
+        txn_id = 999
+
+        # Step 1: BEGIN
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="BEGIN",
+            data=Rows.from_list([]),
+            query="BEGIN TRANSACTION"
+        ))
+
+        # Step 2: Multi-row UPDATE - simulate updating 5 employees with 10% raise
+        # This tests the FIX: writeLog should log ALL rows, not just data.data[0]
+        affected_rows = []
+        for row in mini_sm.tables['employees']:
+            old_salary = row['salary']
+            new_salary = int(old_salary * 1.1)  # 10% raise
+            affected_rows.append({
+                'table': 'employees',
+                'column': 'salary',
+                'id': row['id'],
+                'old_value': old_salary,
+                'new_value': new_salary
+            })
+            # Apply change to in-memory data
+            row['salary'] = new_salary
+
+        print(f"[INFO] Logging multi-row UPDATE for {len(affected_rows)} rows...")
+
+        # Log all affected rows in ONE call (this is the critical test)
+        self.frm.writeLog(ExecutionResult(
+            transaction_id=txn_id,
+            timestamp=datetime.now(),
+            message="Multi-row UPDATE",
+            data=Rows.from_list(affected_rows),  # Multiple rows!
+            query=f"UPDATE employees SET salary = salary * 1.1"
+        ))
+
+        # Put updated data to FRM buffer
+        self.frm.put_buffer_entry('employees', mini_sm.tables['employees'], is_dirty=True)
+
+        # Verify changes applied
+        for row in mini_sm.tables['employees']:
+            expected = int(initial_salaries[row['id']] * 1.1)
+            assert row['salary'] == expected, f"Row {row['id']} should have updated salary"
+
+        print(f"[OK] Applied updates to {len(affected_rows)} rows")
+
+        # IMPORTANT: Flush logs to disk before reading them
+        self.frm._writeAheadLog.flushBuffer()
+
+        # Verify ALL rows were logged (not just first row)
+        logs = self.frm._writeAheadLog.getAllLogsBackward()
+        update_logs = [log for log in logs if log.getTransactionId() == txn_id
+                      and log.getEntryType() == LogEntryType.UPDATE]
+
+        print(f"[VERIFY] Logged {len(update_logs)} UPDATE entries")
+        assert len(update_logs) == len(affected_rows), \
+            f"Should log ALL {len(affected_rows)} rows, not just first row! (got {len(update_logs)})"
+
+        print(f"[OK] Multi-row UPDATE logged correctly: {len(update_logs)} entries")
+
+        # Step 3: ABORT - verify ALL rows are rolled back
+        print(f"[INFO] Aborting transaction...")
+        success = self.frm.abort(txn_id)
+        assert success, "Abort should succeed"
+
+        # Step 4: Verify ALL rows rolled back
+        recovered_data = self.frm.get_buffer_entry('employees')
+        print(f"[VERIFY] Checking rollback for {len(affected_rows)} rows:")
+
+        all_rolled_back = True
+        for row in recovered_data:
+            expected_salary = initial_salaries[row['id']]
+            actual_salary = row['salary']
+
+            if actual_salary == expected_salary:
+                print(f"  [OK] Employee {row['id']}: {actual_salary} (correct)")
+            else:
+                print(f"  [FAIL] Employee {row['id']}: {actual_salary} (expected {expected_salary})")
+                all_rolled_back = False
+
+            assert actual_salary == expected_salary, \
+                f"Row {row['id']} should be rolled back to {expected_salary}"
+
+        assert all_rolled_back, "ALL rows must be rolled back (not just first row)"
+        print(f"[OK] ALL {len(affected_rows)} rows successfully rolled back")
+
+        # Verify CLRs written for ALL updates
+        clr_logs = [log for log in self.frm._writeAheadLog.getAllLogsBackward()
+                   if log.getTransactionId() == txn_id
+                   and log.getEntryType() == LogEntryType.COMPENSATION]
+
+        print(f"[VERIFY] CLRs written: {len(clr_logs)}")
+        assert len(clr_logs) == len(affected_rows), \
+            f"Should write CLR for each UPDATE (expected {len(affected_rows)}, got {len(clr_logs)})"
+
+        print(f"[OK] Multi-row update logging and recovery VERIFIED")
+
+    def test_26_timestamp_checkpoint_safety(self):
+        print("\n[TEST 26] Testing timestamp checkpoint creation and safety...")
+
+        # Test 1: Sequential checkpoint timestamp monotonicity
+        print(f"[INFO] Creating sequential checkpoints...")
+        checkpoints = []
+
+        for i in range(5):
+            cp = self.frm.saveCheckpoint(activeTransactions=[i])
+            assert cp is not None, f"Checkpoint {i+1} should succeed"
+
+            checkpoints.append(cp)
+            print(f"  Checkpoint {cp.getCheckpointId()}: {cp.getTimestamp().isoformat()}")
+            time.sleep(0.01)  # Small delay
+
+        # Verify checkpoint IDs are monotonically increasing
+        print(f"[VERIFY] Checking checkpoint ID and timestamp ordering...")
+        for i in range(1, len(checkpoints)):
+            curr_cp = checkpoints[i]
+            prev_cp = checkpoints[i-1]
+
+            # Checkpoint ID must increase
+            assert curr_cp.getCheckpointId() > prev_cp.getCheckpointId(), \
+                "Checkpoint ID should increase"
+
+            # Timestamp should increase (or equal if very fast)
+            assert curr_cp.getTimestamp() >= prev_cp.getTimestamp(), \
+                "Timestamp should increase or stay same"
+
+            print(f"  [OK] CP{prev_cp.getCheckpointId()} -> CP{curr_cp.getCheckpointId()}: OK")
+
+        print(f"[OK] Checkpoint IDs and timestamps are monotonic")
+
+        # Test 2: Concurrent checkpoint safety
+        print(f"\n[INFO] Testing concurrent checkpoint creation...")
+        import threading
+
+        checkpoint_results = []
+        errors = []
+        lock = threading.Lock()
+
+        def create_checkpoint(thread_id):
+            try:
+                time.sleep(0.01 * thread_id)  # Stagger starts
+                cp = self.frm.saveCheckpoint(activeTransactions=[thread_id])
+
+                with lock:
+                    if cp is not None:
+                        checkpoint_results.append({
+                            'thread_id': thread_id,
+                            'checkpoint_id': cp.getCheckpointId(),
+                            'timestamp': cp.getTimestamp()
+                        })
+                        print(f"  Thread {thread_id}: Created checkpoint {cp.getCheckpointId()}")
+                    else:
+                        errors.append(f"Thread {thread_id}: Checkpoint failed")
+            except Exception as e:
+                with lock:
+                    errors.append(f"Thread {thread_id}: Exception: {e}")
+
+        num_threads = 3
+        threads = []
+        print(f"[INFO] Starting {num_threads} concurrent checkpoint threads...")
+
+        for i in range(num_threads):
+            t = threading.Thread(target=create_checkpoint, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        print(f"[VERIFY] Concurrent checkpoint results:")
+        print(f"  - Checkpoints created: {len(checkpoint_results)}")
+        print(f"  - Errors: {len(errors)}")
+
+        if errors:
+            for error in errors:
+                print(f"  ✗ {error}")
+
+        assert len(errors) == 0, "No errors should occur in concurrent checkpoints"
+        assert len(checkpoint_results) > 0, "At least some checkpoints should be created"
+
+        # Verify no duplicate checkpoint IDs
+        checkpoint_ids = [cp['checkpoint_id'] for cp in checkpoint_results]
+        unique_ids = set(checkpoint_ids)
+        assert len(checkpoint_ids) == len(unique_ids), \
+            "All checkpoint IDs should be unique (no race conditions)"
+
+        print(f"[OK] Concurrent checkpoints handled safely")
+        print(f"[OK] Timestamp checkpoint safety VERIFIED")
 
 
 def print_final_summary():

@@ -70,8 +70,6 @@ class FailureRecoveryManager:
     def writeLog(self, info: ExecutionResult) -> None:
         self._validateExecutionResult(info)
 
-        next_log_id = self._writeAheadLog.getNextLogId()
-
         query = info.query
 
         entry_type = LogEntryType.UPDATE
@@ -82,21 +80,33 @@ class FailureRecoveryManager:
         elif "ABORT" in query.upper() or "ROLLBACK" in query.upper():
             entry_type = LogEntryType.ABORT
 
-        data_item = None
-        old_val = None
-        new_val = None
+        if entry_type != LogEntryType.UPDATE:
+            next_log_id = self._writeAheadLog.getNextLogId()
+            log_entry = LogEntry(
+                logId=next_log_id,
+                transactionId=info.transaction_id,
+                timestamp=datetime.now(),
+                entryType=entry_type
+            )
+            self._writeAheadLog.appendLog(log_entry)
+
+            if self._writeAheadLog.needsFlush() or self._shouldCheckpoint():
+                self.saveCheckpoint()
+            return
 
         data = info.data
-        update_details: Dict[str, Any] = {}
+        update_details_list = []
 
         if isinstance(data, Rows):
             if data.data and len(data.data) > 0:
-                update_details = data.data[0]
+                update_details_list = data.data
         elif isinstance(data, int):
-            pass
+            return
 
-        # {'table': 'table_name', 'column': 'col_name', 'id': row_id, 'old_value': old, 'new_value': new}
-        if entry_type == LogEntryType.UPDATE and update_details:
+        if not update_details_list:
+            return
+
+        for update_details in update_details_list:
             required_fields = ['table', 'column', 'id', 'old_value', 'new_value']
             missing_fields = [field for field in required_fields if field not in update_details]
 
@@ -150,18 +160,18 @@ class FailureRecoveryManager:
 
             print(f"[FRM] Valid UPDATE log: {data_item} ({old_val} -> {new_val})")
 
-        log_entry = LogEntry(
-            logId=next_log_id,
-            transactionId=info.transaction_id,
-            timestamp=datetime.now(),
-            entryType=entry_type,
-            dataItem=data_item,
-            oldValue=old_val,
-            newValue=new_val
-        )
+            next_log_id = self._writeAheadLog.getNextLogId()
+            log_entry = LogEntry(
+                logId=next_log_id,
+                transactionId=info.transaction_id,
+                timestamp=datetime.now(),
+                entryType=entry_type,
+                dataItem=data_item,
+                oldValue=old_val,
+                newValue=new_val
+            )
 
-        # Write to WAL buffer (WAL protocol: log before data write)
-        self._writeAheadLog.appendLog(log_entry)
+            self._writeAheadLog.appendLog(log_entry)
 
         if self._writeAheadLog.needsFlush() or self._shouldCheckpoint():
             self.saveCheckpoint()
@@ -219,7 +229,7 @@ class FailureRecoveryManager:
         return self._routine is not None and self._readFromDisk is not None
 
 
-    def saveCheckpoint(self, activeTransactions: Optional[List[int]] = None) -> bool:
+    def saveCheckpoint(self, activeTransactions: Optional[List[int]] = None):
         try:
             print(f"[FRM] Starting checkpoint...")
 
@@ -237,7 +247,7 @@ class FailureRecoveryManager:
                 except Exception as e:
                     print(f"[FRM ERROR] Buffer flush failed: {e}")
                     print(f"[FRM] Cannot checkpoint safely - data may not be on disk")
-                    return False
+                    return None
             else:
                 print(f"[FRM WARNING] No flush routine set, checkpoint may be unsafe")
 
@@ -258,14 +268,14 @@ class FailureRecoveryManager:
             except RuntimeError as e:
                 print(f"[FRM WARNING] Checkpoint successful but truncate failed: {e}")
                 print(f"[FRM WARNING] Old logs not deleted - manual cleanup may be needed")
-                return True
+                return checkpoint
 
             print(f"[FRM] Checkpoint {checkpoint.getCheckpointId()} completed successfully")
-            return True
+            return checkpoint
 
         except Exception as e:
             print(f"[FRM ERROR] Checkpoint failed: {e}")
-            return False
+            return None
 
     # cc: @Concurrency-Control-Manager
     def abort(self, transaction_id: int) -> bool:

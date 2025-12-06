@@ -23,19 +23,21 @@ class LogSerializer:
             self._logFilePath.touch()
 
     def writeLogEntry(self, entryDict: Dict[str, Any]) -> None:
-        with self._logFilePath.open('a', encoding='utf-8') as f:
-            json.dump(entryDict, f, ensure_ascii=False)
-            f.write('\n')
-            f.flush()
-            os.fsync(f.fileno())
+        with self._fileLock:
+            with self._logFilePath.open('a', encoding='utf-8') as f:
+                json.dump(entryDict, f, ensure_ascii=False)
+                f.write('\n')
+                f.flush()
+                os.fsync(f.fileno())
 
     def writeLogEntries(self, entries: List[Dict[str, Any]]) -> None:
-        with self._logFilePath.open('a', encoding='utf-8') as f:
-            for entry in entries:
-                json.dump(entry, f, ensure_ascii=False)
-                f.write('\n')
-            f.flush()
-            os.fsync(f.fileno())
+        with self._fileLock:
+            with self._logFilePath.open('a', encoding='utf-8') as f:
+                for entry in entries:
+                    json.dump(entry, f, ensure_ascii=False)
+                    f.write('\n')
+                f.flush()
+                os.fsync(f.fileno())
 
     def readAllLogs(self) -> List[Dict[str, Any]]:
         if not self._logFilePath.exists():
@@ -121,7 +123,10 @@ class LogSerializer:
     def truncateLogsBefore(self, logId: int) -> None:
         with self._fileLock:
             allLogs = self.readAllLogs()
-            filteredLogs = [log for log in allLogs if log.get("log_id", log.get("logId", 0)) >= logId]
+            filteredLogs = [
+                log for log in allLogs
+                if log.get("type") == "checkpoint" or log.get("log_id", log.get("logId", 0)) >= logId
+            ]
 
             temp_path = self._logFilePath.with_suffix('.tmp')
 
