@@ -294,7 +294,10 @@ class OptimizationEngine:
             max_iter -= 1
 
         # 3) APPLY JOIN RULES (fold selection, assoc, commutative)
-        root = fold_selection_with_cartesian(root)
+        changed = True
+        while changed:
+            changed, root = fold_selection_with_cartesian(root)
+        # root = fold_selection_with_cartesian(root)
         root = merge_selection_into_join(root)
         root = make_join_commutative(root)
         root = associate_natural_join(root)
