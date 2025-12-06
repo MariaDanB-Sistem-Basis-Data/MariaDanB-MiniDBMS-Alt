@@ -279,14 +279,30 @@ def print_result(response: Optional[Dict[str, Any]]):
         cost_after = response.get("cost_after", 0)
         improvement = response.get("improvement_percent", 0)
         opt_info = response.get("optimization_info", {})
+        original_tree = response.get("original_tree", "")
+        optimized_tree = response.get("optimized_tree", "")
         
         print(f"\n  Query: {query}")
         print("\n  " + "=" * 70)
+        
+        # Show original tree
+        if original_tree:
+            print("\n  Original Query Tree:")
+            for line in original_tree.split('\n'):
+                print(f"      {line}")
+        
         print(f"\n  Estimated Cost (before optimization): {cost_before}")
-        print(f"  Estimated Cost (after optimization): {cost_after}")
+        
+        # Show optimized tree
+        if optimized_tree:
+            print("\n  Optimized Query Tree:")
+            for line in optimized_tree.split('\n'):
+                print(f"      {line}")
+        
+        print(f"\n  Estimated Cost (after optimization): {cost_after}")
         
         if improvement > 0:
-            print(f"  Cost reduction: {improvement:.1f}%")
+            print(f"      Cost reduction: {improvement:.1f}%")
         
         if opt_info:
             print("\n  Optimization Details:")
