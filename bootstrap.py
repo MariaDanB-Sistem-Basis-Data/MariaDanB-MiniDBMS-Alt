@@ -76,6 +76,11 @@ def load_dependencies() -> Dependencies:
     def _build_query_processor() -> Any:
         storage_manager = StorageManager(str(storage_data_dir))
         optimization_engine = OptimizationEngine(storage_manager=storage_manager)
+        
+        ccm = ConcurrencyControlManager()
+        ccm.set_method('two_phase_locking') 
+        frm = get_failure_recovery_manager()
+        
         return QueryProcessor(
             optimization_engine=optimization_engine,
             storage_manager=storage_manager,
@@ -83,6 +88,8 @@ def load_dependencies() -> Dependencies:
             data_write_factory=_make_data_write,
             condition_factory=_make_condition,
             schema_factory=_make_schema,
+            concurrency_control_manager=ccm,
+            failure_recovery_manager=frm,
         )
 
     ConcurrencyControlManager = _import_attr(
