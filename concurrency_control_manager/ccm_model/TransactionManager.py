@@ -7,8 +7,6 @@ import sys
 from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
 
-from failure_recovery_manager.FailureRecovery import FailureRecoveryManager
-
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.append(_PROJECT_ROOT)
@@ -20,19 +18,16 @@ except Exception:
 
 @dataclass
 class TransactionManager:
-    transactions: dict[int, Transaction] = None
-    initialized: bool = False
-    next_tid: int = 1
-    # harusnya nanti gini
-    # recovery_manager: Optional[IFailureRecoveryManager] = None
-    # recovery_criteria_factory: Optional[Callable[[int], SupportsRecoveryCriteria]] = None
-    abort_manager: Optional[FailureRecoveryManager] = None
-
+    def __init__(self, abort_manager: Optional[FailureRecoveryManager] = None):
+        self.transactions: dict[int, Transaction] = None
+        self.initialized: bool = False
+        self.next_tid: int = 1
+        self.abort_manager: Optional[FailureRecoveryManager] = abort_manager
+    
     def __post_init__(self):
         if self.transactions is None:
             self.transactions = {}
         self.initialized = True
-        self.abort_manager = FailureRecoveryManager()
 
     
     def clear(self) -> None:
@@ -67,8 +62,9 @@ class TransactionManager:
             if not transaction.can_be_aborted():
                 return False
             transaction.status = TransactionStatus.ABORTED
-            # NOTES
-            self.abort_manager.abort(transaction_id)
+            # Call FRM abort if available (dependency injection)
+            if self.abort_manager is not None:
+                self.abort_manager.abort(transaction_id)
             print(f"Transaction {transaction_id} is {transaction.status.name}.")
             return True
     
