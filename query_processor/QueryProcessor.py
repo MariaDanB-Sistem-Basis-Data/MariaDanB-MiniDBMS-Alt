@@ -452,31 +452,49 @@ class QueryProcessor:
         result = []
 
         conds = condition.condition
-        conds_left_table = conds.attr.table
-        conds_right_table = conds.value.table
-
-        if conds_left_table == right_table or conds_right_table == left_table:
-            left_rows, right_rows = right_rows, left_rows
-
-        # join rows berdasarkan kondisi
+        
+        # Join rows based on condition
         for left_row in left_rows:
             for right_row in right_rows:
                 if isinstance(left_row, dict) and isinstance(right_row, dict):
-                    if conds.attr.column in left_row:
-                        left_val = left_row[conds.attr.column]
-                        
-                        # cek apakah right_col_or_value adalah kolom di right_row
-                        if conds.value.column in right_row:
-                            right_val = right_row[conds.value.column]
-                        else:
-                            right_val = conds.value
-
-                        # evaluasi condition
-                        if self._evaluate_condition(left_val, conds.op, right_val):
-                            combined = {**left_row, **right_row}
-                            result.append(combined)
+                    # Evaluate condition (handles both ConditionNode and LogicalNode)
+                    combined = {**left_row, **right_row}
+                    if self._evaluate_join_condition(conds, combined):
+                        result.append(combined)
         
         return Rows.from_list(result)
+    
+    def _evaluate_join_condition(self, cond, row: dict) -> bool:
+        # node logical
+        if hasattr(cond, 'operator') and hasattr(cond, 'childs'):
+            results = [self._evaluate_join_condition(child, row) for child in cond.childs]
+            if cond.operator == 'AND':
+                return all(results)
+            elif cond.operator == 'OR':
+                return any(results)
+            return False
+        
+        # node condition
+        if not hasattr(cond, 'attr') or not hasattr(cond, 'op'):
+            return False
+        
+        # kiri
+        left_col = cond.attr.column if hasattr(cond.attr, 'column') else str(cond.attr)
+        if left_col not in row:
+            return False
+        left_val = row[left_col]
+        
+        # kanan
+        if hasattr(cond.value, 'column'):
+            right_col = cond.value.column
+            if right_col not in row:
+                return False
+            right_val = row[right_col]
+        else:
+            right_val = cond.value
+        
+        # eval
+        return self._evaluate_condition(left_val, cond.op, right_val)
     
     # evaluasi kondisi untuk join
     def _evaluate_condition(self, left_val, operator: str, right_val) -> bool:
