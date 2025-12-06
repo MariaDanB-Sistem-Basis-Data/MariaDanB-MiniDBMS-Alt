@@ -49,7 +49,7 @@ course_names = [
     "Information Security", "Data Mining", "Mobile Programming"
 ]
 
-serializer = RowSerializer()
+serializer = RowSerializer(with_lsn=True)
 os.makedirs("data", exist_ok=True)
 
 
