@@ -1,1 +1,10 @@
 {"logId": 5, "transactionId": 121634971112771680468946009109344467760, "timestamp": "2025-12-03T16:13:15.713033", "entryType": "update", "dataItem": null, "oldValue": null, "newValue": null}
+{"logId": 6, "transactionId": 1, "timestamp": "2025-12-06T22:03:57.707885", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 7, "transactionId": 1, "timestamp": "2025-12-06T22:04:00.309185", "entryType": "abort", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 8, "transactionId": 1, "timestamp": "2025-12-06T22:06:07.174168", "entryType": "end", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 9, "transactionId": 1, "timestamp": "2025-12-06T22:13:19.440516", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 10, "transactionId": 1, "timestamp": "2025-12-06T22:13:23.399101", "entryType": "commit", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 11, "transactionId": 1, "timestamp": "2025-12-06T22:17:18.872088", "entryType": "end", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 12, "transactionId": 1, "timestamp": "2025-12-06T22:17:52.409748", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 13, "transactionId": 2, "timestamp": "2025-12-06T22:21:00.888945", "entryType": "start", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}
+{"logId": 14, "transactionId": 2, "timestamp": "2025-12-06T22:21:03.865552", "entryType": "commit", "dataItem": null, "oldValue": null, "newValue": null, "undoNextLSN": null}

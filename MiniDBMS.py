@@ -109,6 +109,7 @@ class MiniDBMS:
             payload = self._rows_cls.from_list([
                 {"transaction_id": transaction_id, "status": "ACTIVE"}
             ])
+            res = self.query_processor.execute_query(query)
             result = self._execution_result_cls(
                 transaction_id=transaction_id,
                 timestamp=datetime.now(),

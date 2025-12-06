@@ -829,26 +829,84 @@ class QueryProcessor:
 
 
     # placeholder BEGIN TRANSACTION
-    def execute_begin_transaction(self, query: str) -> Union[Rows, int]:
+    def execute_begin_transaction(self, query: str):
 
-        # parse the query
+        # detect BEGIN TRANSACTION;
+        pattern = r"(?is)\bbegin\s+transaction\s*;"
+        if not re.search(pattern, query):
+            return Rows.from_list(["Syntax Error: Invalid BEGIN TRANSACTION format."])
 
-        # init the transaction
+        buffer: list[str] = []
 
-        # detect every query needed
+        print("[Transaction Started] Type SQL statements. Finish with COMMIT;")
 
-        # for every query, execute thoroughly based on its type
+        commit_query = ""
 
-        return Rows.from_list(["BEGIN TRANSACTION - to be implemented"])
+        while True:
+            prompt = "SQL> " if not buffer else "... "
+            try:
+                raw_line = input(prompt)
+            except EOFError:
+                print()
+                break
+            except KeyboardInterrupt:
+                print()
+                buffer.clear()
+                continue
+
+            stripped = raw_line.strip()
+
+            # skip empty line at start
+            if not buffer and not stripped:
+                continue
+
+            # detect COMMIT;
+            if re.match(r"(?is)commit\s*;", stripped):
+                commit_query = raw_line
+                break  # exits loop
+
+            buffer.append(raw_line)
+
+        block = "\n".join(buffer).strip()
+
+        # Regex to split by semicolon safely
+        split_regex = r""";
+        (?=(?:[^'"]|'[^']*'|"[^"]*")*$)"""
+
+        statements = [
+            stmt.strip()
+            for stmt in re.split(split_regex, block)
+            if stmt.strip()
+        ]
+
+        # Execute each query
+        exec_results = []
+        for stmt in statements:
+            exec_results.append(self.execute_query(stmt))
+
+        if not exec_results:
+            return Rows.from_list(["Transaction began unsuccessfully."])
+
+        # start commit
+        self.execute_commit(commit_query)
+
+        return exec_results
+
 
     # placeholder COMMIT 
     def execute_commit(self, query : str) -> Union[Rows, int]:
 
         # parse the commit word
+        pattern = r"(?i)\bCOMMIT\s*;"
+        match = re.search(pattern, query)
+
+        if not match:
+            return Rows.from_list(["Syntax Error: Invalid COMMIT; format."])
 
         # deactivate the transaction id
+        self._transaction_active = False
 
-        return Rows.from_list(["COMMIT - to be implemented"])
+        return Rows.from_list([f"Transaction COMMITED successfully."])
 
     # placeholder rollback
     def execute_rollback(self) -> Union[Rows, int]:
@@ -876,7 +934,8 @@ class QueryProcessor:
                 return Rows.from_list(["ABORT failed - no active transaction"])
                 
         except Exception as e:
-            raise ValueError(f"Error executing ABORT: {e}")
+            print(f"Error executing ABORT: {e}")
+            return -1
     
     # rollback all changes made in the current transaction
     def _rollback_transaction(self) -> bool:
@@ -896,4 +955,5 @@ class QueryProcessor:
             return True
             
         except Exception as e:
+            print(f"Error rolling back transaction: {e}")
             return False
