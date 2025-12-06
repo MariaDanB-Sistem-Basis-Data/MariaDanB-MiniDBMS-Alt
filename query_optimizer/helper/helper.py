@@ -83,33 +83,18 @@ def _tables_under(node: QueryTree):
     return unique
 
 def fold_selection_with_cartesian(node: QueryTree):
-    changed = False
-
-    for i, c in enumerate(node.childs):
-        chg, new_child = fold_selection_with_cartesian(c)
-        if chg:
-            node.childs[i] = new_child
-            new_child.parent = node
-            changed = True
-
     if node.type == "SIGMA" and node.childs and _is_cartesian(node.childs[0]):
-        cart = node.childs[0]
-        pred = node.val  
-
-        # convert cartesian -> theta join
-        cart.type = "JOIN"
-        cart.val = f"THETA:{pred}"
-
-        # replace SIGMA by JOIN
+        join = node.childs[0]
+        pred = node.val  # seluruh predicate disimpan di val
+        join.val = ThetaJoin(pred) 
+        # ganti sigma dengan join
         if node.parent:
-            node.parent.replace_child(node, cart)
-            cart.parent = node.parent
+            node.parent.replace_child(node, join)
+            join.parent = node.parent
         else:
-            cart.parent = None
-
-        return True, cart
-
-    return changed, node
+            join.parent = None
+        return join
+    return node
 
 # σθ(E1 ⋈θ2 E2)  ⇒  E1 ⋈(θ ∧ θ2) E2
 def merge_selection_into_join(node: QueryTree):
