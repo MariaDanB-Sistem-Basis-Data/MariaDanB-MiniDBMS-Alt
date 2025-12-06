@@ -10,7 +10,6 @@ from model.query_tree import (
 from helper.helper import (
     fold_selection_with_cartesian,
     merge_selection_into_join,
-    expand_theta_join_with_and,
     make_join_commutative,
     associate_natural_join,
     associate_theta_join,
@@ -52,7 +51,6 @@ from helper.helper import (
     _reattach_upper_operators,
     _is_natural,
     _is_theta,
-    _is_cartesian,
 )
 
 from helper.stats import get_stats
@@ -288,38 +286,48 @@ class OptimizationEngine:
 
         # 2) APPLY NON-JOIN RULES (push-down & simplify)
         changed = True
-        max_iter = 10 
-        iteration = 0
-        
-        while changed and iteration < max_iter:
-            prev = repr(root)            
-            root = self._expand_theta_joins(root)
+        max_iter = 5
+        while changed and max_iter > 0:
+            prev = repr(root)
             root = self._apply_non_join_rules(root)
-            
-            # Phase 3: Fold SIGMA + CARTESIAN back to THETA_JOIN
-            root = self._apply_join_rules(root)
             changed = (repr(root) != prev)
-            iteration += 1
+            max_iter -= 1
 
-        # 4) TABLE EXTRACTION FOR JOIN REORDERING
+        # 3) APPLY JOIN RULES (fold selection, assoc, commutative)
+        root = fold_selection_with_cartesian(root)
+        root = merge_selection_into_join(root)
+        root = make_join_commutative(root)
+        root = associate_natural_join(root)
+        root = associate_theta_join(root)
+
+        # 4) TABLE EXTRACTION
         tables = list(_tables_under(root)) if root else []
         if len(tables) <= 1:
             self.last_optimization_info = {
                 'num_tables': len(tables),
-                'method': 'rule_based',
-                'reason': 'Single or no tables - no join reordering needed'
+                'method': 'none',
+                'reason': 'Single or no tables'
             }
             return ParsedQuery(parsed_query.query, root)
 
-        # 5) EXTRACT UPPER OPERATORS AND JOIN CONDITIONS
+        # 5) EXTRACT NON-JOIN OPERATORS
         upper_operators = _extract_upper_operators(root)
+
+        # 6) BUILD JOIN CONDITIONS FROM CURRENT TREE
         join_conditions, natural_joins = self._extract_join_info(root)
 
-        # 6) REBUILD JOIN TREE WITH BETTER ORDER
+        # 7) GET STATS
         stats = get_stats()
+
+        # 8) CHOOSE OPTIMIZATION METHOD BASED ON TABLE COUNT
+        best_join_tree = None
+        optimization_info = {
+            'num_tables': len(tables),
+            'tables': tables
+        }
         
         if self.use_ga and len(tables) >= self.ga_threshold_tables:
-            # Use GA for complex queries
+            # Use both GA and Heuristic, compare results
             ga_tree, ga_cost, ga_details = self._genetic_algorithm_optimize(
                 tables, join_conditions, natural_joins, stats
             )
@@ -327,47 +335,44 @@ class OptimizationEngine:
                 tables, join_conditions, natural_joins, stats
             )
             
+            # Choose the better one
             if ga_cost < heuristic_cost:
                 best_join_tree = ga_tree
-                self.last_optimization_info = {
-                    'num_tables': len(tables),
+                optimization_info.update({
                     'method': 'genetic_algorithm',
                     'ga_cost': ga_cost,
                     'heuristic_cost': heuristic_cost,
+                    'improvement': heuristic_cost - ga_cost,
                     'improvement_pct': ((heuristic_cost - ga_cost) / heuristic_cost * 100) if heuristic_cost > 0 else 0,
-                    'generations': ga_details['generations_run']
-                }
+                    'ga_generations': ga_details['generations_run'],
+                    'ga_converged': ga_details['converged']
+                })
             else:
                 best_join_tree = heuristic_tree
-                self.last_optimization_info = {
-                    'num_tables': len(tables),
+                optimization_info.update({
                     'method': 'heuristic',
-                    'reason': 'Better than GA'
-                }
+                    'ga_cost': ga_cost,
+                    'heuristic_cost': heuristic_cost,
+                    'reason': 'heuristic_better'
+                })
         else:
-            # Use heuristic for simple queries
+            # Use heuristic only for simple queries
             best_join_tree, cost = self._heuristic_optimize(
                 tables, join_conditions, natural_joins, stats
             )
-            self.last_optimization_info = {
-                'num_tables': len(tables),
+            optimization_info.update({
                 'method': 'heuristic',
-                'reason': f'Tables ({len(tables)}) below GA threshold ({self.ga_threshold_tables})'
-            }
+                'cost': cost,
+                'reason': f'table_count_below_threshold ({len(tables)} < {self.ga_threshold_tables})'
+            })
 
-        # 7) REATTACH UPPER OPERATORS
+        # Store optimization info for later inspection
+        self.last_optimization_info = optimization_info
+
+        # 9) REATTACH UPPER OPERATORS TO BEST JOIN TREE
         final_tree = _reattach_upper_operators(best_join_tree, upper_operators)
 
-        # 8) APPLY RULE-BASED OPTIMIZATION TO REORDERED TREE
-        changed = True
-        max_iter = 5
-        while changed and max_iter > 0:
-            prev = repr(final_tree)
-            final_tree = self._apply_non_join_rules(final_tree)
-            final_tree = self._apply_join_rules(final_tree)
-            changed = (repr(final_tree) != prev)
-            max_iter -= 1
-
+        # 10) RETURN BEST PLAN AS FINAL OPTIMIZED QUERY TREE
         return ParsedQuery(parsed_query.query, final_tree)
 
     def _heuristic_optimize(self, tables, join_conditions, natural_joins, stats):
@@ -570,32 +575,6 @@ class OptimizationEngine:
         
         return ParsedQuery(pq.query, root)
 
-    def _expand_theta_joins(self, node: QueryTree) -> QueryTree:
-        if not node:
-            return node
-        
-        for i, child in enumerate(node.childs):
-            node.childs[i] = self._expand_theta_joins(child)
-        
-        node = expand_theta_join_with_and(node)
-        
-        return node
-
-    def _apply_join_rules(self, node: QueryTree) -> QueryTree:
-        if not node:
-            return node
-        
-        # bottom-up, rekursi dr childs
-        for i, child in enumerate(node.childs):
-            node.childs[i] = self._apply_join_rules(child)
-        
-        node = fold_selection_with_cartesian(node)
-        node = merge_selection_into_join(node)
-        node = associate_natural_join(node)
-        node = associate_theta_join(node)
-        
-        return node
-
     def _apply_non_join_rules(self, node: QueryTree) -> QueryTree:
         """Apply non-join optimization rules recursively."""
         if not node:
@@ -615,18 +594,6 @@ class OptimizationEngine:
         node = push_projection_through_join_with_join_attrs(node)
         
         return node
-    
-    def _get_all_join_nodes(self, node: QueryTree):
-        joins = []
-        
-        def traverse(n):
-            if n.type == "JOIN":
-                joins.append(n)
-            for child in n.childs:
-                traverse(child)
-        
-        traverse(node)
-        return joins
     
     def _extract_join_info(self, tree: QueryTree):
         join_conditions = {}
