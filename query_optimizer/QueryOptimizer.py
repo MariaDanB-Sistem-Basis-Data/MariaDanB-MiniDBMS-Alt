@@ -613,7 +613,7 @@ class OptimizationEngine:
                                 natural_joins.add(key)
                             elif _is_theta(node):
                                 cond = _theta_pred(node)
-                                if cond is not None:
+                                if cond:
                                     join_conditions[key] = cond
             
             for child in node.childs:

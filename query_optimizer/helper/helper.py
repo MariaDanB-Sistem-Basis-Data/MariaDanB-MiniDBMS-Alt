@@ -96,7 +96,7 @@ def merge_selection_into_join(node: QueryTree):
         join = node.childs[0]
         p_old = _theta_pred(join)
         p_new = node.val
-        if p_old is None:
+        if not p_old:
             merged_cond = p_new
         else:
             # create LogicalNode with AND
@@ -263,10 +263,10 @@ def build_join_tree(order, join_conditions: dict = None, natural_joins: set = No
 
         else:
             # direct key lookup
-            key = frozenset({cur_table, next_name})
+            key = frozenset({cur_name, next_name})
             pred = join_conditions.get(key, None)
 
-            # klo gk ketemu, coba cari dengan nama string
+            # klo gk ketemu, coba cari dengan tabel-tabel di subtree kiri
             if not pred:
                 left_tables = list(_tables_under(cur))
                 for lt in left_tables:
@@ -1299,8 +1299,11 @@ def _parse_value_or_column(value_str):
         else:
             return int(value_str)
     except ValueError:
-        parts = value_str.split('.', 1)
-        return ColumnNode(parts[1].strip(), parts[0].strip())
+        if '.' in value_str:
+            parts = value_str.split('.', 1)
+            return ColumnNode(parts[1].strip(), parts[0].strip())
+        else:
+            return ColumnNode(value_str)
 
 # parse columns string dan return list of ColumnNode atau "*"
 def parse_columns_from_string(columns_str):
