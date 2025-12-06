@@ -7,6 +7,41 @@ from bootstrap import Dependencies, load_dependencies
 from MiniDBMS import MiniDBMS
 
 
+def _print_tree_structure(node, indent="", is_last=True) -> None:
+    if not node:
+        return
+    
+    # Print current node
+    prefix = indent + ("└── " if is_last else "├── ")
+    node_type = node.type if hasattr(node, 'type') else "UNKNOWN"
+    node_val = ""
+    
+    if hasattr(node, 'val') and node.val is not None:
+        val = node.val
+        if isinstance(val, list):
+            if len(val) <= 3:
+                node_val = f" {val}"
+            else:
+                node_val = f" [{len(val)} items]"
+        elif isinstance(val, str) and len(val) > 50:
+            node_val = f" {val[:47]}..."
+        else:
+            node_val = f" {val}"
+    
+    print(f"{prefix}{node_type}{node_val}")
+    
+    children = None
+    if hasattr(node, 'childs') and node.childs:
+        children = node.childs
+    elif hasattr(node, 'children') and node.children:
+        children = node.children
+    
+    if children:
+        for i, child in enumerate(children):
+            child_indent = indent + ("    " if is_last else "│   ")
+            _print_tree_structure(child, child_indent, i == len(children) - 1)
+
+
 def _handle_special_command(command: str, dbms: MiniDBMS, deps: Dependencies) -> None:
     parts = command.split()
     cmd = parts[0].lower()
@@ -50,7 +85,6 @@ def _handle_special_command(command: str, dbms: MiniDBMS, deps: Dependencies) ->
                     for attr in schema.attributes:
                         col_name = attr.get('name', 'unknown')
                         col_type = attr.get('type', 'unknown')
-                        # Note: Schema doesn't store primary key info directly
                         print("  | " + col_name.ljust(20) + " | " + col_type.ljust(15) + " | " + "".ljust(10) + " |")
                 
                 print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 10 + "-+")
@@ -74,20 +108,111 @@ def _handle_special_command(command: str, dbms: MiniDBMS, deps: Dependencies) ->
         else:
             print("  Checkpoint failed.")
     
-    elif cmd == "\\test":
-        print("\n" + "=" * 80)
-        print("COMPREHENSIVE DBMS TEST SUITE")
-        print("=" * 80)
-        _run_comprehensive_tests(dbms, deps)
+    elif cmd == "\\tx" or cmd == "\\transactions":
+        if hasattr(dbms, '_active_transactions') and dbms._active_transactions:
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            print("  | " + "Transaction ID".ljust(20) + " | " + "Status".ljust(15) + " | " + "Start Time".ljust(25) + " |")
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            
+            if hasattr(dbms, 'concurrency_manager') and hasattr(dbms.concurrency_manager, 'transaction_manager'):
+                tx_manager = dbms.concurrency_manager.transaction_manager
+                for tx_id in sorted(dbms._active_transactions):
+                    if hasattr(tx_manager, 'get_transaction'):
+                        tx = tx_manager.get_transaction(tx_id)
+                        if tx:
+                            status = str(tx.status.name if hasattr(tx.status, 'name') else tx.status)
+                            start_time = tx.start_time.strftime("%Y-%m-%d %H:%M:%S") if hasattr(tx, 'start_time') else "N/A"
+                            print("  | " + str(tx_id).ljust(20) + " | " + status.ljust(15) + " | " + start_time.ljust(25) + " |")
+                    else:
+                        print("  | " + str(tx_id).ljust(20) + " | " + "ACTIVE".ljust(15) + " | " + "N/A".ljust(25) + " |")
+            else:
+                for tx_id in sorted(dbms._active_transactions):
+                    print("  | " + str(tx_id).ljust(20) + " | " + "ACTIVE".ljust(15) + " | " + "N/A".ljust(25) + " |")
+            
+            print("  +-" + "-" * 20 + "-+-" + "-" * 15 + "-+-" + "-" * 25 + "-+")
+            print(f"  Total: {len(dbms._active_transactions)} active transaction(s)")
+        else:
+            print("  No active transactions.")
+    
+    elif cmd == "explain":
+        if len(parts) < 2:
+            print("  Usage: explain <query>")
+            print("  Example: explain SELECT * FROM Student WHERE GPA > 3.0")
+            print("  Note: Query can end with or without semicolon")
+            return
+        
+        query = " ".join(parts[1:]).strip()
+        display_query = query.rstrip(";").strip()
+        if not query.endswith(";"):
+            query = query + ";"
+        
+        if not query.upper().startswith("SELECT"):
+            print("  EXPLAIN only supports SELECT queries.")
+            return
+        
+        try:
+            optimizer = getattr(dbms.query_processor, 'optimization_engine', None)
+            if not optimizer:
+                print("  [Error] Query optimizer not available")
+                return
+            
+            print(f"\n  Query: {display_query}")
+            print("\n  " + "=" * 70)
+            
+            parsed = optimizer.parse_query(query)
+            print("\n Original Query Tree:")
+            if parsed and parsed.query_tree:
+                _print_tree_structure(parsed.query_tree, indent="      ")
+            else:
+                print("      (empty)")
+            
+            # cost sblm optimize
+            cost_before = optimizer.get_cost(parsed) if parsed else 0
+            print(f"\n  Estimated Cost (before optimization): {cost_before}")
+            
+            # optimize
+            optimized = optimizer.optimize_query(parsed)
+            
+            print("\n  Optimized Query Tree:")
+            if optimized and optimized.query_tree:
+                _print_tree_structure(optimized.query_tree, indent="      ")
+            else:
+                print("      (empty)")
+            
+            # cost sesudah optimize
+            cost_after = optimizer.get_cost(optimized) if optimized else 0
+            print(f"\n  Estimated Cost (after optimization): {cost_after}")
+            
+            if cost_before > 0 and cost_after > 0:
+                improvement = ((cost_before - cost_after) / cost_before) * 100
+                print(f"      Cost reduction: {improvement:.1f}%")
+            
+            if hasattr(optimizer, 'last_optimization_info') and optimizer.last_optimization_info:
+                info = optimizer.last_optimization_info
+                print("\n  Optimization Details:")
+                if 'method' in info:
+                    print(f"      Method: {info['method']}")
+                if 'join_order' in info:
+                    print(f"      Join order: {info['join_order']}")
+                if 'heuristics_applied' in info:
+                    print(f"      Heuristics: {', '.join(info['heuristics_applied'])}")
+            
+            print("\n  " + "=" * 70)
+            
+        except Exception as e:
+            print(f"  [Error] Failed to explain query: {e}")
+            import traceback
+            traceback.print_exc()
     
     elif cmd == "\\help":
         print("\n  Special Commands:")
-        print("    \\dt              - List all tables")
-        print("    \\d <table>       - Describe table schema")
-        print("    \\test            - Run comprehensive test suite")
-        print("    \\checkpoint      - Force checkpoint")
-        print("    \\help            - Show this help message")
-        print("    exit or quit     - Exit the shell\n")
+        print("    \\dt                  - List all tables")
+        print("    \\d <table>           - Describe table schema")
+        print("    \\tx, \\transactions   - View all active transactions")
+        print("    explain <query>     - Show query execution plan and cost")
+        print("    \\checkpoint          - Force checkpoint")
+        print("    \\help                - Show this help message")
+        print("    exit or quit         - Exit the shell\n")
     
     else:
         print(f"  Unknown command: {cmd}")
@@ -173,8 +298,6 @@ def run(argv: Sequence[str] | None = None) -> None:
 
     if args and args[0] == "--interactive":
         _run_interactive(dbms, deps)
-    elif args and args[0] == "--test":
-        _run_comprehensive_tests(dbms, deps)
     else:
         _run_demo(dbms, deps)
 
@@ -189,7 +312,7 @@ def _run_demo(dbms: MiniDBMS, deps: Dependencies) -> None:
 
 def _run_interactive(dbms: MiniDBMS, deps: Dependencies) -> None:
     print("MariaDanB-MiniDBMS Interactive Shell")
-    print("Commands: \\dt (list tables), \\d <table> (describe), \\test (run tests), \\checkpoint, \\help, exit")
+    print("Commands: \\dt, \\d <table>, \\tx, explain <query>, \\checkpoint, \\help, exit")
     buffer: list[str] = []
 
     while True:
@@ -217,8 +340,7 @@ def _run_interactive(dbms: MiniDBMS, deps: Dependencies) -> None:
             print("[Info] Cleared pending statement. Type 'exit' again to quit.")
             continue
 
-        # Handle special commands
-        if not buffer and stripped.startswith("\\"):
+        if not buffer and (stripped.startswith("\\") or stripped.lower().startswith("explain ")):
             _handle_special_command(stripped, dbms, deps)
             continue
 
