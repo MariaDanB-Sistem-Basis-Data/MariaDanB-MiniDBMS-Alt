@@ -7,6 +7,8 @@ import sys
 from ccm_model.Enums import TransactionStatus
 from ccm_model.Transaction import Transaction
 
+from failure_recovery_manager.FailureRecovery import FailureRecoveryManager
+
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.append(_PROJECT_ROOT)
@@ -18,17 +20,20 @@ except Exception:
 
 @dataclass
 class TransactionManager:
-    transactions: dict[int, 'Transaction'] = None
+    transactions: dict[int, Transaction] = None
     initialized: bool = False
     next_tid: int = 1
     # harusnya nanti gini
     # recovery_manager: Optional[IFailureRecoveryManager] = None
     # recovery_criteria_factory: Optional[Callable[[int], SupportsRecoveryCriteria]] = None
-    
+    abort_manager: Optional[FailureRecoveryManager] = None
+
     def __post_init__(self):
         if self.transactions is None:
             self.transactions = {}
         self.initialized = True
+        self.abort_manager = FailureRecoveryManager()
+
     
     def clear(self) -> None:
         self.transactions.clear()
@@ -63,7 +68,7 @@ class TransactionManager:
                 return False
             transaction.status = TransactionStatus.ABORTED
             # NOTES
-            # nanti tiap abort manggil frm.recover(criteria)
+            self.abort_manager.abort(transaction_id)
             print(f"Transaction {transaction_id} is {transaction.status.name}.")
             return True
     
