@@ -69,6 +69,8 @@ def _tables_under(node: QueryTree):
             out.append(n.val)
         for c in n.childs:
             dfs(c)
+    
+    dfs(node)
 
     seen = set()
     unique = []
@@ -120,6 +122,44 @@ def merge_selection_into_join(node: QueryTree):
             join.parent = None
         return join
     return node
+
+# Dekomposisi THETA_JOIN pake AND ke SIGMA berantai
+# E1 ⋈(θ1 ∧ θ2) E2  ⇒  σθ1(σθ2(E1 ⋈ E2))
+def expand_theta_join_with_and(node: QueryTree):
+    if node.type != "JOIN" or not _is_theta(node):
+        return node
+    
+    if len(node.childs) < 2:
+        return node
+    
+    theta_cond = node.val
+    if isinstance(theta_cond, ThetaJoin):
+        theta_cond = theta_cond.condition
+    
+    if not isinstance(theta_cond, LogicalNode) or theta_cond.operator != "AND":
+        return node
+    
+    conditions = theta_cond.childs if hasattr(theta_cond, 'childs') else []
+    if len(conditions) < 2:
+        return node
+    
+    cartesian = QueryTree("JOIN", "CARTESIAN", node.childs[:])
+    for child in cartesian.childs:
+        child.parent = cartesian
+    
+    current = cartesian
+    for cond in reversed(conditions):
+        sigma = QueryTree("SIGMA", cond, [current])
+        current.parent = sigma
+        current = sigma
+    
+    if node.parent:
+        node.parent.replace_child(node, current)
+        current.parent = node.parent
+    else:
+        current.parent = None
+    
+    return current
 
 # Komutatif: E1 ⋈ E2 = E2 ⋈ E1
 def make_join_commutative(join_node: QueryTree):
