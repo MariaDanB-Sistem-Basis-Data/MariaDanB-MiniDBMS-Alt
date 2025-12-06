@@ -123,7 +123,12 @@ class MiniDBMS:
         if query_type == self._query_type_enum.COMMIT:
             return self._handle_transaction_completion(query, commit=True)
 
-        if query_type in (self._query_type_enum.ABORT, self._query_type_enum.ROLLBACK):
+        if query_type == self._query_type_enum.ABORT:
+            self.failure_recovery_manager.abort(self._latest_transaction_id)
+            return self._handle_transaction_completion(query, commit=False)
+        
+        if query_type == self._query_type_enum.ROLLBACK:
+            self.failure_recovery_manager.recover(self._latest_transaction_id)
             return self._handle_transaction_completion(query, commit=False)
 
         fallback = self.query_processor.execute_query(query)
