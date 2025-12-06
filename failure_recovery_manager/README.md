@@ -18,3 +18,9 @@ cd failure_recovery_manager/frm_test
 ```bash
 python UnitTest.py
 ```
+
+### How to Run Unit Test 2 (integrated with real Storage Manager)
+1. Run this from root folder
+``
+python -m failure_recovery_manager.frm_test.UnitTest2
+```
