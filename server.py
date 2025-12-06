@@ -231,3 +231,24 @@ class DBMSServer:
         if self.server_socket:
             self.server_socket.close()
         print("[Server] Server stopped")
+
+
+def main():
+    host = "127.0.0.1"
+    port = 13523
+
+    if len(sys.argv) > 1:
+        port = int(sys.argv[1])
+    if len(sys.argv) > 2:
+        host = sys.argv[2]
+
+    server = DBMSServer(host=host, port=port)
+
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\n[Server] Shutting down...")
+    finally:
+        server.stop()
+if __name__ == "__main__":
+    main()
