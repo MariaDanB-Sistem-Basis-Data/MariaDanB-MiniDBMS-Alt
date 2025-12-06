@@ -4,6 +4,7 @@ import warnings
 import time
 import os
 import threading
+from pathlib import Path
 
 # Exceptions
 from frm_model.Rows import Rows
@@ -30,6 +31,21 @@ class FailureRecoveryManager:
         read_callback: Optional[callable] = None
     ):
         if not hasattr(self, 'initialized'):
+            if not os.path.isabs(logFilePath):
+                import inspect
+                frames = inspect.stack()
+                is_test = any('unittest' in frame.filename or 'UnitTest' in frame.filename for frame in frames)
+
+                if is_test:
+                    frm_root = Path(__file__).resolve().parent
+                    logFilePath = str(frm_root / logFilePath)
+                else:
+                    current = Path(__file__).resolve().parent
+                    while current.name != 'MariaDanB-MiniDBMS-Alt' and current.parent != current:
+                        current = current.parent
+                    project_root = current
+                    logFilePath = str(project_root / logFilePath)
+
             self._writeAheadLog = WriteAheadLog(logFilePath)
             self._buffer: Buffer[Any] = Buffer(
                 maxSize=bufferSize,
