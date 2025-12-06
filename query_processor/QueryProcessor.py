@@ -17,6 +17,7 @@ from storage_manager.storagemanager_model.condition import Condition as cond
 from storage_manager.storagemanager_helper.schema import Schema as sch
 from query_optimizer.QueryOptimizer import OptimizationEngine as oe
 from query_optimizer.model.query_tree import QueryTree as qt
+from storage_manager.storagemanager_helper.slotted_page import SlottedPage  
 
 class QueryProcessor:
     def __init__(
@@ -722,7 +723,11 @@ class QueryProcessor:
             raw_type = parts[1]
             
             col_type = raw_type.lower()
-            col_size = 0
+            col_size = 1
+
+            # use regex to validate data types varchar(*)
+            if col_type not in ['int', 'integer', 'float', 'char'] and re.match(r"varchar\(\d+\)", col_type) is None:
+                return Rows.from_list([f"Error: Unsupported data type '{col_type}' for column '{col_name}'."])
 
             # handle Varchar/Char with size (e.g., varchar(50))
             if '(' in raw_type and ')' in raw_type:
@@ -732,9 +737,12 @@ class QueryProcessor:
                     col_size = int(type_match.group(2))
             
             # handle integers (fixed size 4 bytes)
-            elif col_type in ['int', 'integer']:
+            elif col_type in ['int', 'integer', 'float']:
                 col_size = 4
             
+            if col_type == 'integer':
+                col_type = 'int'
+
             # add to schema
             try:
                 add_attribute = getattr(new_schema, "add_attribute")
@@ -745,16 +753,17 @@ class QueryProcessor:
         # save to Schema Manager
         self.storage_manager.schema_manager.add_table_schema(table_name, new_schema)
         self.storage_manager.schema_manager.save_schemas()
-        self.storage_manager.schema_manager.load_schemas()
 
-        # physical data file 
+        # physical data file with proper page structure
         file_path = os.path.join(self.storage_manager.base_path, f"{table_name}.dat")
         try:
+            empty_page = SlottedPage()
             with open(file_path, 'wb') as f:
-                pass # Create empty file
+                f.write(empty_page.serialize())
         except IOError as e:
             return Rows.from_list([f"Error creating table file: {str(e)}"])
 
+        self.storage_manager.schema_manager.load_schemas()
         return Rows.from_list([f"Table '{table_name}' created successfully."])
 
     def execute_drop_table(self, query: str) -> Union[Rows, int]:
@@ -767,7 +776,7 @@ class QueryProcessor:
         table_name = match.group(1)
 
         # delete .dat file
-        dat_path = f"./storage_manager/data/{table_name}.dat"
+        dat_path = os.path.join(self.storage_manager.base_path, f"{table_name}.dat")
         if os.path.exists(dat_path):
             os.remove(dat_path)
 
