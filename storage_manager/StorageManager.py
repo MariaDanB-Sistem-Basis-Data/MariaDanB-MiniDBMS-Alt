@@ -12,7 +12,7 @@ from storagemanager_helper.index import HashIndexManager, BPlusTreeIndexManager
 
 
 class StorageManager:
-    def __init__(self, base_path='data', frm_instance=None, recovery_enabled=False):
+    def __init__(self, base_path='data', frm_instance=None, recovery_enabled=True):
         self.base_path = base_path
         self.storage_path = base_path
         self.row_serializer = RowSerializer(with_lsn=(frm_instance is not None or recovery_enabled))
@@ -574,7 +574,7 @@ class StorageManager:
         file_size = os.path.getsize(table_file)
         page_count = file_size // 4096
         
-        serializer = RowSerializer()
+        serializer = RowSerializer(with_lsn=self.row_serializer.with_lsn)
         distinct_values = {attr['name']: set() for attr in attributes}
         
         try:

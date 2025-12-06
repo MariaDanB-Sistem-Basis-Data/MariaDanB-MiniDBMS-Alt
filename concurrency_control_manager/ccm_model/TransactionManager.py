@@ -19,15 +19,10 @@ except Exception:
 @dataclass
 class TransactionManager:
     def __init__(self, recovery_manager: Optional[FailureRecoveryManager] = None):
-        self.transactions: dict[int, Transaction] = None
-        self.initialized: bool = False
+        self.transactions: dict[int, Transaction] = {}
+        self.initialized: bool = True
         self.next_tid: int = 1
         self.recovery_manager: Optional[FailureRecoveryManager] = recovery_manager
-    
-    def __post_init__(self):
-        if self.transactions is None:
-            self.transactions = {}
-        self.initialized = True
 
     
     def clear(self) -> None:
