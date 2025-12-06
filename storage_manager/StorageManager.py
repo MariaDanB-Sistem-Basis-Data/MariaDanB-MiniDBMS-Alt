@@ -366,7 +366,7 @@ class StorageManager:
         # Security: Filter out _lsn from user input for UPDATE
         # Save FRM's _lsn if it exists, remove user's _lsn
         frm_lsn = None
-        if '_lsn' in new_value and hasattr(self, 'frm') and self.frm:
+        if '_lsn' in new_value and hasattr(self, 'frm_instance') and self.frm_instance:
             frm_lsn = new_value['_lsn']
         sanitized_new_value = {k: v for k, v in new_value.items() if k != '_lsn'}
         if frm_lsn is not None:
