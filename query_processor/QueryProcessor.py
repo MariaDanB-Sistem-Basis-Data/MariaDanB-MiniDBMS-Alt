@@ -46,10 +46,6 @@ class QueryProcessor:
         query_type = get_query_type(query)
 
         try:
-            # NOTE: harusnya yang handle keywords kaya FROM, JOIN, WHERE itu dari optimizer karena kan itu keyword bagian dari select atau query lain. soalnya disini cuma ngeidentifikasi tipe query dari keyword awalnya doang (CMIIW)
-
-            # NOTE: feel free to adjust, kode ini dibikin dalam kondisi mengantuk kurang tidur
-
             result_data = Rows.from_list([])
             if query_type == QueryType.SELECT:
                 result_data = self.execute_select(query)
@@ -112,7 +108,6 @@ class QueryProcessor:
             optimized_query = self.optimization_engine.optimize_query(parsed_query)
             if optimized_query.query_tree is None:
                 return Rows.from_list(["SELECT parsing failed - optimizer produced empty query tree"])
-            
             self._extract_table_aliases(optimized_query.query_tree)
             result_data = self._execute_query_tree(optimized_query.query_tree)
             
@@ -184,20 +179,17 @@ class QueryProcessor:
         elif node.type == "SIGMA":
             return self._apply_selection(child_results[0], node.val)
         
-        elif node.type == "JOIN" or node.type == "NATURAL_JOIN" or node.type == "THETA_JOIN":
-            return self._apply_join(child_results[0], child_results[1], str(node.val), node.type)
-        
-        elif node.type == "CARTESIAN":
-            return self._apply_cartesian(child_results[0], child_results[1])
+        elif node.type == "JOIN":
+            return self._apply_join(child_results[1], child_results[0], node.val)
         
         elif node.type == "SORT":
-            return self._apply_sort(child_results[0], str(node.val))
+            return self._apply_sort(child_results[0], node.val)
         
         elif node.type == "LIMIT":
-            return self._apply_limit(child_results[0], str(node.val))
+            return self._apply_limit(child_results[0], node.val)
         
         elif node.type == "GROUP":
-            return self._apply_group(child_results[0], str(node.val))
+            return self._apply_group(child_results[0], node.val)
         
         elif node.type == "OR":
             combined_data = []
@@ -247,7 +239,7 @@ class QueryProcessor:
             result = self.storage_manager.read_block(data_retrieval)
             
             if result is not None and isinstance(result, list):
-                return Rows.from_list(result)
+                return Rows.from_list(result, table_source=table_str)
             else:
                 return Rows.from_list([])
                 
@@ -352,71 +344,54 @@ class QueryProcessor:
                 if row_value is None:
                     continue
                 
-                try:
-                    row_value_num = float(row_value)
-                    value_num = float(value)
-                    
-                    epsilon = 1e-9
-                    
-                    if operator == "=":
-                        if abs(row_value_num - value_num) < epsilon:
-                            filtered_data.append(row)
-                    elif operator == "!=":
-                        if abs(row_value_num - value_num) >= epsilon:
-                            filtered_data.append(row)
-                    elif operator == ">":
-                        if row_value_num > value_num:
-                            filtered_data.append(row)
-                    elif operator == "<":
-                        if row_value_num < value_num:
-                            filtered_data.append(row)
-                    elif operator == ">=":
-                        if row_value_num >= value_num - epsilon:
-                            filtered_data.append(row)
-                    elif operator == "<=":
-                        if row_value_num <= value_num + epsilon:
-                            filtered_data.append(row)
-                except ValueError:
-                    if operator == "=" and row_value == value:
-                        filtered_data.append(row)
-                    elif operator == "!=" and row_value != value:
-                        filtered_data.append(row)
+                if self._evaluate_condition(row_value, operator, value):
+                    filtered_data.append(row)
         
         return Rows.from_list(filtered_data)
 
     # apply join operation - support JOIN, NATURAL_JOIN, and THETA_JOIN
-    def _apply_join(self, left_data: Rows, right_data: Rows, condition: str, join_type: str) -> Rows:
+    def _apply_join(self, left_data: Rows, right_data: Rows, condition: str) -> Rows:
         if not left_data.data or not right_data.data:
             return Rows.from_list([])
         
         result = []
-        
-        if join_type == "JOIN":
-            # inner join: hanya me-return baris yang memenuhi kondisi join
-            result = self._theta_join(left_data.data, right_data.data, condition)
+
+        # i know its hacky, but its 2 am and isinstance not working because of import issues
+        if repr(condition) == "NATURAL":
+            join_type = "NATURAL_JOIN"
+        elif isinstance(condition, str):
+            join_type = "CARTESIAN"
+        else:
+            join_type = "THETA_JOIN"
+
+        if join_type == "CARTESIAN":
+            # cartesian product
+            result = self._apply_cartesian(left_data, right_data)
         
         elif join_type == "NATURAL_JOIN":
             # natural join: join berdasarkan kolom dengan value yang sama
-            result = self._natural_join(left_data.data, right_data.data)
+            result = self._natural_join(left_data, right_data)
         
         elif join_type == "THETA_JOIN":
             # theta join: join berdasarkan kondisi tertentu (=, <, >, <=, >=, !=)
-            result = self._theta_join(left_data.data, right_data.data, condition)
+            result = self._theta_join(left_data, right_data, condition)
         
-        return Rows.from_list(result)
+        return result
     
     # natural join berdasarkan kolom dengan nilai yang sama
-    def _natural_join(self, left_rows: list, right_rows: list) -> list:
+    def _natural_join(self, left: Rows, right: Rows) -> Rows:
+        left_rows = left.data
+        right_rows = right.data
         result = []
         
         if not left_rows or not right_rows:
-            return result
+            return Rows.from_list[result]
         
         left_first = left_rows[0]
         right_first = right_rows[0]
         
         if not isinstance(left_first, dict) or not isinstance(right_first, dict):
-            return result
+            return Rows.from_list(result)
         
         common_cols = set(left_first.keys()) & set(right_first.keys())
         
@@ -434,100 +409,77 @@ class QueryProcessor:
                             combined[key] = val
                     result.append(combined)
         
-        return result
+        return Rows.from_list(result)
     
     # theta join berdasarkan kondisi
-    def _theta_join(self, left_rows: list, right_rows: list, condition: str) -> list:
+    def _theta_join(self, left: Rows, right: Rows, condition: str) -> Rows:
+        left_rows = left.data
+        right_rows = right.data
+
+        left_table = left.table_source
+        right_table = right.table_source
+
         result = []
-        
-        if not condition:
-            # jika tidak ada condition, return cartesian product
-            return self._cartesian_join(left_rows, right_rows)
-        
-        # parse condition: format "left_col op right_col" atau "left_col op value"
-        operators = [">=", "<=", "!=", "=", ">", "<"]
-        operator = None
-        left_col = None
-        right_col_or_value = None
-        
-        for op in operators:
-            if op in condition:
-                parts = condition.split(op)
-                left_col = parts[0].strip()
-                right_col_or_value = parts[1].strip().strip("'\"")
-                operator = op
-                break
-        
-        if not operator or not left_col:
-            return self._cartesian_join(left_rows, right_rows)
-        
+
+        conds = condition.condition
+        conds_left_table = conds.attr.table
+        conds_right_table = conds.value.table
+
+        if conds_left_table == right_table or conds_right_table == left_table:
+            left_rows, right_rows = right_rows, left_rows
+
         # join rows berdasarkan kondisi
         for left_row in left_rows:
             for right_row in right_rows:
                 if isinstance(left_row, dict) and isinstance(right_row, dict):
-                    if left_col in left_row:
-                        left_val = left_row[left_col]
+                    if conds.attr.column in left_row:
+                        left_val = left_row[conds.attr.column]
                         
                         # cek apakah right_col_or_value adalah kolom di right_row
-                        if right_col_or_value in right_row:
-                            right_val = right_row[right_col_or_value]
+                        if conds.value.column in right_row:
+                            right_val = right_row[conds.value.column]
                         else:
-                            right_val = right_col_or_value
-                        
+                            right_val = conds.value
+
                         # evaluasi condition
-                        if self._evaluate_condition(left_val, operator, right_val):
+                        if self._evaluate_condition(left_val, conds.op, right_val):
                             combined = {**left_row, **right_row}
                             result.append(combined)
         
-        return result
-    
-    # cartesian product untuk join
-    def _cartesian_join(self, left_rows: list, right_rows: list) -> list:
-        result = []
-        for left_row in left_rows:
-            for right_row in right_rows:
-                if isinstance(left_row, dict) and isinstance(right_row, dict):
-                    combined = {**left_row, **right_row}
-                    result.append(combined)
-        return result
+        return Rows.from_list(result)
     
     # evaluasi kondisi untuk join
     def _evaluate_condition(self, left_val, operator: str, right_val) -> bool:
         try:
-            # coba convert ke float untuk numeric comparison
-            left_num = float(left_val)
-            right_num = float(right_val)
+            row_value_num = float(left_val)
+            value_num = float(right_val)
+            
+            epsilon = 1e-9
             
             if operator == "=":
-                return left_num == right_num
-            elif operator == "!=":
-                return left_num != right_num
+                if abs(row_value_num - value_num) < epsilon:
+                    return True
+            elif operator == "!=" or operator == "<>":
+                if abs(row_value_num - value_num) >= epsilon:
+                    return True
             elif operator == ">":
-                return left_num > right_num
+                if row_value_num > value_num:
+                    return True
             elif operator == "<":
-                return left_num < right_num
+                if row_value_num < value_num:
+                    return True
             elif operator == ">=":
-                return left_num >= right_num
+                if row_value_num >= value_num - epsilon:
+                    return True
             elif operator == "<=":
-                return left_num <= right_num
-        except (ValueError, TypeError):
-            # string comparison jika tidak bisa convert ke number
-            left_str = str(left_val)
-            right_str = str(right_val)
+                if row_value_num <= value_num + epsilon:
+                    return True
+        except ValueError:
+            if operator == "=" and left_val == right_val:
+                return True
+            elif (operator == "!=" or operator == "<>") and left_val != right_val:
+                return True
             
-            if operator == "=":
-                return left_str == right_str
-            elif operator == "!=":
-                return left_str != right_str
-            elif operator == ">":
-                return left_str > right_str
-            elif operator == "<":
-                return left_str < right_str
-            elif operator == ">=":
-                return left_str >= right_str
-            elif operator == "<=":
-                return left_str <= right_str
-        
         return False
 
     # apply CARTESIAN product
